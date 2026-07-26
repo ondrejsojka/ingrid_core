@@ -34,6 +34,13 @@ lazy_static! {
     };
 }
 
+/// The inclusion priority assigned to a word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WordTier {
+    Preferred,
+    Standard,
+}
+
 /// A struct representing a word in the word list.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -437,6 +444,10 @@ pub struct WordList {
     /// The last seen state of each word list source, keyed by source id.
     pub source_states: HashMap<String, WordListSourceState>,
 
+    /// Source ids and their current indices for sources whose words are preferred during filling.
+    preferred_source_ids: HashSet<String>,
+    preferred_source_indices: HashSet<u16>,
+
     /// Do we have pending updates that need to be saved? If we try to sync and it fails, we'll
     /// reset this to `false` to avoid infinite-looping, but the changes will still be available on
     /// the individual sources and will be retried next time we attempt a sync.
@@ -465,12 +476,47 @@ impl WordList {
             source_configs: vec![],
             personal_list_index,
             source_states: HashMap::new(),
+            preferred_source_ids: HashSet::new(),
+            preferred_source_indices: HashSet::new(),
             needs_sync: false,
         };
 
         instance.replace_list(source_configs, personal_list_index, max_length, false);
 
         instance
+    }
+
+    /// Mark the given sources as preferred. Words supplied by every other source are standard.
+    ///
+    /// When a word occurs in multiple sources, its tier comes from the highest-priority enabled
+    /// source that supplies it, just like its score and canonical representation.
+    pub fn set_preferred_source_ids(&mut self, source_ids: HashSet<String>) {
+        self.preferred_source_ids = source_ids;
+        self.refresh_preferred_source_indices();
+    }
+
+    /// Return the effective tier of a loaded word.
+    #[must_use]
+    pub fn word_tier(&self, global_word_id: GlobalWordId) -> WordTier {
+        let word = self.get_word(global_word_id);
+        if word
+            .source_index
+            .is_some_and(|index| self.preferred_source_indices.contains(&index))
+        {
+            WordTier::Preferred
+        } else {
+            WordTier::Standard
+        }
+    }
+
+    fn refresh_preferred_source_indices(&mut self) {
+        self.preferred_source_indices = self
+            .source_configs
+            .iter()
+            .enumerate()
+            .filter(|(_, source)| self.preferred_source_ids.contains(&source.id))
+            .map(|(index, _)| u16::try_from(index).expect("Too many word list sources"))
+            .collect();
     }
 
     /// If the given normalized word is already in the list, return its id; if not, add it as a
@@ -591,6 +637,7 @@ impl WordList {
         silent: bool,
     ) -> (bool, HashSet<GlobalWordId>) {
         self.source_configs = source_configs;
+        self.refresh_preferred_source_indices();
         self.personal_list_index = personal_list_index;
         self.max_length = max_length;
 
@@ -1231,6 +1278,7 @@ pub mod tests {
     use crate::types::GlobalWordId;
     use crate::word_list::{
         NormalizationSettings, WordList, WordListSourceConfig, WordListSourceConfigProvider,
+        WordTier,
     };
     use std::collections::HashSet;
     use std::fs;
@@ -1258,6 +1306,43 @@ pub mod tests {
             },
             normalization: None,
         }]
+    }
+
+    #[test]
+    fn test_word_tiers_follow_effective_source() {
+        let source = |id: &str, words: &[&str]| WordListSourceConfig {
+            id: id.into(),
+            enabled: true,
+            provider: WordListSourceConfigProvider::Memory {
+                words: words.iter().map(|word| ((*word).to_string(), 50)).collect(),
+            },
+            normalization: None,
+        };
+        let sources = vec![
+            source("preferred", &["alpha", "shared"]),
+            source("standard", &["bravo", "shared"]),
+        ];
+        let mut word_list = WordList::new(sources.clone(), None, None, None);
+        word_list.set_preferred_source_ids(HashSet::from(["preferred".into()]));
+
+        let tier = |word_list: &WordList, word: &str| {
+            word_list.word_tier((
+                word.chars().count(),
+                *word_list.word_id_by_string.get(word).unwrap(),
+            ))
+        };
+        assert_eq!(tier(&word_list, "alpha"), WordTier::Preferred);
+        assert_eq!(tier(&word_list, "shared"), WordTier::Preferred);
+        assert_eq!(tier(&word_list, "bravo"), WordTier::Standard);
+
+        word_list.replace_list(
+            vec![sources[1].clone(), sources[0].clone()],
+            None,
+            None,
+            true,
+        );
+        assert_eq!(tier(&word_list, "shared"), WordTier::Standard);
+        assert_eq!(tier(&word_list, "alpha"), WordTier::Preferred);
     }
 
     #[test]

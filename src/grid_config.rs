@@ -161,7 +161,7 @@ pub struct OwnedGridConfig {
 impl OwnedGridConfig {
     #[allow(dead_code)]
     #[must_use]
-    pub fn to_config_ref(&self) -> GridConfig {
+    pub fn to_config_ref(&self) -> GridConfig<'_> {
         GridConfig {
             word_list: &self.word_list,
             fill: &self.fill,
@@ -226,9 +226,13 @@ pub fn sort_slot_options(
             // This is arbitrary, based on visual inspection of the ranges for each value. Generally
             // increasing the weight of `fill_score` relative to the other two will reduce fill
             // time.
-            -((fill_score * 900.0) as i64
-                + ((word.letter_score as f32) * 5.0) as i64
-                + ((word.score as f32) * 5.0) as i64)
+            (
+                word_list.word_tier((slot_config.length, option))
+                    == crate::word_list::WordTier::Standard,
+                -((fill_score * 900.0) as i64
+                    + ((word.letter_score as f32) * 5.0) as i64
+                    + ((word.score as f32) * 5.0) as i64),
+            )
         });
     }
 }

@@ -18,6 +18,7 @@ use crate::arc_consistency::{
 use crate::grid_config::{Choice, Crossing, GridConfig, SlotId};
 use crate::types::WordId;
 use crate::util::{build_glyph_counts_by_cell, GlyphCountsByCell};
+use crate::word_list::WordTier;
 
 /// If the previously-attempted slot is within this distance of the "best" (lowest-priority-value)
 /// slot, we should stick with the previous one instead of switching (per Balafoutis).
@@ -260,10 +261,38 @@ enum ArcConsistencyMode {
     Elimination(Choice, Option<SlotId>),
 }
 
+fn can_satisfy_minimum_preferred_words(
+    config: &GridConfig,
+    slots: &[Slot],
+    minimum_preferred_words: usize,
+) -> bool {
+    if minimum_preferred_words == 0 {
+        return true;
+    }
+
+    slots
+        .iter()
+        .filter(|slot| {
+            slot.fixed_word_id.map_or_else(
+                || {
+                    config.slot_options[slot.id].iter().any(|&word_id| {
+                        slot.eliminations[word_id].is_none()
+                            && config.word_list.word_tier((slot.length, word_id))
+                                == WordTier::Preferred
+                    })
+                },
+                |word_id| config.word_list.word_tier((slot.length, word_id)) == WordTier::Preferred,
+            )
+        })
+        .take(minimum_preferred_words)
+        .count()
+        == minimum_preferred_words
+}
+
 /// Within the context of a fill attempt, either establish initial arc consistency, propagate the
 /// impact of a choice, or propagate the impact of an elimination. Also update crossing weights
 /// if it turns out to be impossible to achieve consistency (a "domain wipeout").
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn maintain_arc_consistency(
     config: &GridConfig,
     slots: &mut [Slot],
@@ -272,6 +301,7 @@ fn maintain_arc_consistency(
     mode: &ArcConsistencyMode,
     time: &mut Duration,
     elimination_sets: &mut [EliminationSet],
+    minimum_preferred_words: usize,
 ) -> bool {
     struct Adapter<'a> {
         config: &'a GridConfig<'a>,
@@ -400,7 +430,9 @@ fn maintain_arc_consistency(
         starting_slot_id,
         elimination_sets,
     ) {
-        // If we succeeded, we just need to apply the new eliminations to each slot and we're done.
+        // If we succeeded, apply the new eliminations and then check the global preferred-word
+        // bound. The latter is not a binary arc constraint, so it must be checked against all live
+        // slot domains after AC has settled.
         Ok(()) => {
             for (slot_id, eliminations) in elimination_sets.iter().enumerate() {
                 for &word_id in &eliminations.eliminated_ids {
@@ -408,7 +440,27 @@ fn maintain_arc_consistency(
                 }
             }
 
-            true
+            if can_satisfy_minimum_preferred_words(config, slots, minimum_preferred_words) {
+                true
+            } else {
+                // The cardinality check rejected an otherwise arc-consistent provisional update.
+                // Roll back both AC's eliminations and the choice/elimination that triggered it.
+                for (slot_id, eliminations) in elimination_sets.iter().enumerate() {
+                    for &word_id in &eliminations.eliminated_ids {
+                        slots[slot_id].remove_elimination(config, word_id);
+                    }
+                }
+                match mode {
+                    ArcConsistencyMode::Choice(choice) => {
+                        slots[choice.slot_id].clear_choice();
+                    }
+                    ArcConsistencyMode::Elimination(choice, ..) => {
+                        slots[choice.slot_id].remove_elimination(config, choice.word_id);
+                    }
+                    ArcConsistencyMode::Initial => {}
+                }
+                false
+            }
         }
 
         // If we failed, we need to undo any provisional changes we made above and update our
@@ -513,10 +565,22 @@ pub enum FillFailure {
     ExceededBacktrackLimit(usize),
 }
 
+/// Per-attempt constraints and controls that do not change the static grid configuration.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FillOptions<'a> {
+    /// Minimum number of slots whose chosen word must come from a preferred source.
+    pub minimum_preferred_words: usize,
+    /// An additional cancellation flag, independent of `GridConfig::abort`.
+    pub abort: Option<&'a std::sync::atomic::AtomicBool>,
+    /// Offset added to retry RNG seeds so concurrent workers explore different paths.
+    pub rng_seed_offset: u64,
+}
+
 /// Search for a valid fill for the given grid, bailing out if we reach the deadline or the
 /// specified number of backtracks. We receive some state as arguments that can be shared between
 /// multiple retries of the same overall search attempt.
-#[allow(clippy::too_many_lines)]
+/// Search with the legacy defaults: no preferred-word minimum and no additional cancellation flag.
+#[allow(clippy::too_many_arguments)]
 pub fn find_fill_for_seed(
     config: &GridConfig,
     slots: &Vec<Slot>,
@@ -526,8 +590,33 @@ pub fn find_fill_for_seed(
     crossing_weights: &mut [f32],
     elimination_sets: &mut [EliminationSet],
 ) -> Result<FillSuccess, FillFailure> {
+    find_fill_for_seed_with_options(
+        config,
+        slots,
+        deadline,
+        max_backtracks,
+        rng_seed,
+        crossing_weights,
+        elimination_sets,
+        FillOptions::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
+fn find_fill_for_seed_with_options(
+    config: &GridConfig,
+    slots: &Vec<Slot>,
+    deadline: Option<Instant>,
+    max_backtracks: usize,
+    rng_seed: u64,
+    crossing_weights: &mut [f32],
+    elimination_sets: &mut [EliminationSet],
+    options: FillOptions,
+) -> Result<FillSuccess, FillFailure> {
     let start = Instant::now();
-    let mut rng: SmallRng = SeedableRng::seed_from_u64(rng_seed);
+    let mut rng: SmallRng =
+        SeedableRng::seed_from_u64(options.rng_seed_offset.wrapping_add(rng_seed));
     let mut statistics = Statistics::default();
 
     let mut slots: Vec<Slot> = (*slots).clone();
@@ -561,10 +650,14 @@ pub fn find_fill_for_seed(
                 }
             }
         }
-        if let Some(abort) = config.abort {
-            if abort.load(Ordering::Relaxed) {
-                return Err(FillFailure::Abort);
-            }
+        if config
+            .abort
+            .is_some_and(|abort| abort.load(Ordering::Relaxed))
+            || options
+                .abort
+                .is_some_and(|abort| abort.load(Ordering::Relaxed))
+        {
+            return Err(FillFailure::Abort);
         }
 
         // Choose which slot to try to fill.
@@ -639,6 +732,7 @@ pub fn find_fill_for_seed(
             &ArcConsistencyMode::Choice(choice.clone()),
             &mut statistics.choice_arc_consistency_time,
             elimination_sets,
+            options.minimum_preferred_words,
         ) {
             // If we successfully propagated constraints for this choice, we can record it and
             // move on to the next slot.
@@ -664,6 +758,7 @@ pub fn find_fill_for_seed(
                 ),
                 &mut statistics.elimination_arc_consistency_time,
                 elimination_sets,
+                options.minimum_preferred_words,
             ) {
                 // If we successfully propagated constraints for this elimination, we're done
                 // backtracking and can return to the top-level loop.
@@ -702,12 +797,23 @@ pub fn find_fill_for_seed(
     }
 }
 
-/// Search for a valid fill for the given grid, if one can be found within the given amount of time.
+/// Search with the legacy defaults: no preferred-word minimum and no additional cancellation flag.
 #[allow(dead_code)]
 pub fn find_fill(
     config: &GridConfig,
     timeout: Option<Duration>,
     elimination_sets: Option<&mut [EliminationSet]>,
+) -> Result<FillSuccess, FillFailure> {
+    find_fill_with_options(config, timeout, elimination_sets, FillOptions::default())
+}
+
+/// Search for a valid fill while applying per-attempt preferred-word and cancellation controls.
+#[allow(dead_code)]
+pub fn find_fill_with_options(
+    config: &GridConfig,
+    timeout: Option<Duration>,
+    elimination_sets: Option<&mut [EliminationSet]>,
+    options: FillOptions,
 ) -> Result<FillSuccess, FillFailure> {
     let start = Instant::now();
     let deadline = timeout.map(|timeout| start + timeout);
@@ -774,6 +880,7 @@ pub fn find_fill(
         &ArcConsistencyMode::Initial,
         &mut initial_arc_consistency_time,
         elimination_sets,
+        options.minimum_preferred_words,
     ) {
         return Err(FillFailure::HardFailure);
     }
@@ -785,7 +892,7 @@ pub fn find_fill(
     // Now keep trying to fill the grid until we either succeed or run out of time. Each attempt has
     // a slightly larger `max_backtracks` value in addition to having a new RNG seed.
     for retry_num in 0.. {
-        match find_fill_for_seed(
+        match find_fill_for_seed_with_options(
             config,
             &slots,
             deadline,
@@ -793,6 +900,7 @@ pub fn find_fill(
             retry_num,
             &mut crossing_weights,
             elimination_sets,
+            options,
         ) {
             Ok(mut result) => {
                 result.statistics.retries = retry_num as usize;

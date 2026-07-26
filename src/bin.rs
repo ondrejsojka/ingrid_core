@@ -1,11 +1,13 @@
 use clap::Parser;
-use ingrid_core::backtracking_search::find_fill;
+use ingrid_core::backtracking_search::FillFailure;
 use ingrid_core::grid_config::{generate_grid_config_from_template_string, render_grid};
+use ingrid_core::parallel_search::find_best_fill;
 use ingrid_core::word_list::{WordList, WordListSourceConfig, WordListSourceConfigProvider};
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::fs;
-use std::time::Instant;
+use std::num::NonZeroUsize;
+use std::time::{Duration, Instant};
 use unicode_normalization::UnicodeNormalization;
 
 const STWL_RAW: &str = include_str!("../resources/spreadthewordlist.dict");
@@ -17,9 +19,13 @@ struct Args {
     /// Path to the grid file, as ASCII with # representing blocks and . representing empty squares
     grid_path: String,
 
-    /// Path to a scored wordlist file [default: (embedded copy of Spread the Wordlist)]
+    /// Path to the standard-tier scored wordlist [default: embedded Spread the Wordlist]
     #[arg(long)]
     wordlist: Option<String>,
+
+    /// Path to a preferred-tier scored wordlist
+    #[arg(long)]
+    preferred_wordlist: Option<String>,
 
     /// Minimum allowable word score
     #[arg(long, default_value_t = 50)]
@@ -28,6 +34,14 @@ struct Args {
     /// Maximum shared substring length between entries [default: none]
     #[arg(long)]
     max_shared_substring: Option<usize>,
+
+    /// Number of CPU cores to use [default: all available cores]
+    #[arg(long)]
+    cores: Option<NonZeroUsize>,
+
+    /// Maximum search time in seconds; 0 waits for a proven optimum
+    #[arg(long, default_value_t = 60)]
+    timeout: u64,
 
     /// Print timing information along with the grid
     #[arg(short, long, default_value_t = false)]
@@ -40,6 +54,17 @@ impl Debug for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0) // Print error unquoted
     }
+}
+
+fn fill_failure_error(failure: FillFailure) -> Error {
+    Error(match failure {
+        FillFailure::HardFailure => "Unfillable grid".into(),
+        FillFailure::Timeout => "No fill found before the search timeout".into(),
+        FillFailure::Abort => "Fill canceled".into(),
+        FillFailure::ExceededBacktrackLimit(limit) => {
+            format!("Fill stopped after exceeding the {limit}-backtrack limit")
+        }
+    })
 }
 
 fn main() -> Result<(), Error> {
@@ -70,7 +95,7 @@ fn main() -> Result<(), Error> {
         return Err(Error("Rows in grid must all be the same length".into()));
     }
 
-    let width = raw_grid_content.lines().next().unwrap().chars().count() - 1;
+    let width = raw_grid_content.lines().next().unwrap().chars().count();
     let max_side = width.max(height);
 
     if !args
@@ -84,41 +109,57 @@ fn main() -> Result<(), Error> {
 
     let start = Instant::now();
 
-    let word_list = WordList::new(
-        vec![match args.wordlist {
-            Some(wordlist_path) => WordListSourceConfig {
-                id: "0".into(),
-                enabled: true,
-                provider: WordListSourceConfigProvider::File {
-                    path: wordlist_path.into(),
-                },
-                normalization: None,
+    let has_preferred_wordlist = args.preferred_wordlist.is_some();
+    let mut source_configs = Vec::with_capacity(2);
+    if let Some(preferred_wordlist_path) = args.preferred_wordlist {
+        source_configs.push(WordListSourceConfig {
+            id: "preferred".into(),
+            enabled: true,
+            provider: WordListSourceConfigProvider::File {
+                path: preferred_wordlist_path.into(),
             },
-            None => WordListSourceConfig {
-                id: "0".into(),
-                enabled: true,
-                provider: WordListSourceConfigProvider::FileContents { contents: STWL_RAW },
-                normalization: None,
+            normalization: None,
+        });
+    }
+    source_configs.push(match args.wordlist {
+        Some(wordlist_path) => WordListSourceConfig {
+            id: "standard".into(),
+            enabled: true,
+            provider: WordListSourceConfigProvider::File {
+                path: wordlist_path.into(),
             },
-        }],
+            normalization: None,
+        },
+        None => WordListSourceConfig {
+            id: "standard".into(),
+            enabled: true,
+            provider: WordListSourceConfigProvider::FileContents { contents: STWL_RAW },
+            normalization: None,
+        },
+    });
+
+    let mut word_list = WordList::new(
+        source_configs,
         None,
         Some(max_side),
         args.max_shared_substring,
     );
+    if has_preferred_wordlist {
+        word_list.set_preferred_source_ids(HashSet::from(["preferred".into()]));
+    }
 
     let word_list_time = start.elapsed();
 
-    #[allow(clippy::comparison_chain)]
-    if let Some(errors) = word_list.get_source_errors().get("0") {
-        if errors.len() == 1 {
-            return Err(Error(format!("{}", errors[0])));
-        } else if errors.len() > 1 {
-            let mut full_error: String = "".into();
-            for error in errors {
-                full_error.push_str(&format!("\n- {error}"));
-            }
-            return Err(Error(full_error));
-        }
+    let source_errors = word_list
+        .get_source_errors()
+        .values()
+        .flatten()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if source_errors.len() == 1 {
+        return Err(Error(source_errors[0].clone()));
+    } else if !source_errors.is_empty() {
+        return Err(Error(format!("\n- {}", source_errors.join("\n- "))));
     }
 
     if word_list.word_id_by_string.is_empty() {
@@ -128,19 +169,56 @@ fn main() -> Result<(), Error> {
     let grid_config =
         generate_grid_config_from_template_string(word_list, &raw_grid_content, args.min_score);
 
-    let result = find_fill(&grid_config.to_config_ref(), None, None)
-        .map_err(|_| Error("Unfillable grid".into()))?;
+    let timeout = (args.timeout != 0).then(|| Duration::from_secs(args.timeout));
+    let result = find_best_fill(
+        &grid_config.to_config_ref(),
+        timeout,
+        args.cores.map(NonZeroUsize::get),
+    )
+    .map_err(fill_failure_error)?;
 
     let fill_time = start.elapsed() - word_list_time;
 
     println!(
         "{}",
-        render_grid(&grid_config.to_config_ref(), &result.choices).replace('.', "#")
+        render_grid(&grid_config.to_config_ref(), &result.fill.choices).replace('.', "#")
     );
 
     if args.time {
-        eprintln!("{word_list_time:?} loading word list, {fill_time:?} finding fill");
+        eprintln!(
+            "{word_list_time:?} loading word lists, {fill_time:?} finding fill, {} preferred words",
+            result.preferred_word_count
+        );
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fill_failure_error, Args};
+    use clap::Parser;
+    use ingrid_core::backtracking_search::FillFailure;
+
+    #[test]
+    fn cli_search_timeout_defaults_to_one_minute() {
+        let args = Args::try_parse_from(["ingrid_core", "grid.txt"]).unwrap();
+        assert_eq!(args.timeout, 60);
+    }
+
+    #[test]
+    fn cli_reports_solver_failures_accurately() {
+        assert_eq!(
+            format!("{:?}", fill_failure_error(FillFailure::HardFailure)),
+            "Unfillable grid"
+        );
+        assert_eq!(
+            format!("{:?}", fill_failure_error(FillFailure::Timeout)),
+            "No fill found before the search timeout"
+        );
+        assert_eq!(
+            format!("{:?}", fill_failure_error(FillFailure::Abort)),
+            "Fill canceled"
+        );
+    }
 }

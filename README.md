@@ -49,12 +49,18 @@ utne#anise#atta
 pegs#lemur#shay
 ```
 
-You can also use a custom word list (the default is [Spread the
-Wordlist](https://www.spreadthewordlist.com)) or customize various other
-options:
+You can provide separate preferred and standard scored word lists. The standard list defaults to
+[Spread the Wordlist](https://www.spreadthewordlist.com). Ingrid uses all available CPU cores by
+default; `--cores` sets an explicit limit.
+
+With a preferred list, workers search at different minimum preferred-word counts. A completed fill
+cancels workers at easier minima while harder workers continue, and the freed cores are reassigned
+across the remaining viable counts. The CLI returns the best fill found after 60 seconds by default;
+`--timeout 0` instead waits until the largest attainable preferred-word count is proven.
+
 ```
 $ ingrid_core --help
-ingrid_core: Command-line crossword generation tool
+Crossword-generating library and CLI tool
 
 Usage: ingrid_core [OPTIONS] <GRID_PATH>
 
@@ -63,15 +69,29 @@ Arguments:
 
 Options:
       --wordlist <WORDLIST>
-          Path to a scored wordlist file [default: (embedded copy of Spread the Wordlist)]
+          Path to the standard-tier scored wordlist [default: embedded Spread the Wordlist]
+      --preferred-wordlist <PREFERRED_WORDLIST>
+          Path to a preferred-tier scored wordlist
       --min-score <MIN_SCORE>
           Minimum allowable word score [default: 50]
       --max-shared-substring <MAX_SHARED_SUBSTRING>
           Maximum shared substring length between entries [default: none]
+      --cores <CORES>
+          Number of CPU cores to use [default: all available cores]
+      --timeout <TIMEOUT>
+          Maximum search time in seconds; 0 waits for a proven optimum [default: 60]
+  -t, --time
+          Print timing information along with the grid
   -h, --help
-          Print help information
+          Print help
   -V, --version
-          Print version information
+          Print version
+```
+
+For example:
+
+```
+$ ingrid_core --preferred-wordlist theme.dict --wordlist standard.dict --cores 8 example_grid.txt
 ```
 
 ### Acknowledgments
