@@ -99,6 +99,83 @@ For example:
 $ ingrid_core --preferred-wordlist theme.dict --wordlist standard.dict --cores 8 example_grid.txt
 ```
 
+### Czech Metropolitan recipe
+
+The scripts under `scripts/` build a reproducible Czech Standard tier and a
+Metropolitan-specific Preferred tier. They require Python 3.10 or newer,
+`curl`, `pdftotext`, [`ufal.morphodita`](https://pypi.org/project/ufal.morphodita/),
+and a Czech MorphoDiTa `.tagger` from the
+[Czech MorphoDiTa model](https://hdl.handle.net/11234/1-5985).
+
+Fetch Metropolitan editions and retain their extracted text:
+
+```
+$ python3 scripts/metropolitan_pdf_to_dict.py --fetch-years 2020-2026 \
+    --outdir local/metropolitan --keep-txt
+```
+
+Build the Standard list from `cs-all-cstenten.wls` and `cstenten17.frqwl` in
+[`cshyphen`](https://github.com/ondrejsojka/cshyphen), then bias its scores
+toward canonical dictionary forms:
+
+```
+$ python3 scripts/cstenten_wls_to_dict.py \
+    --wls /path/to/cshyphen/src/cs-all-cstenten.wls \
+    --frqwl /path/to/cshyphen/src/cstenten17.frqwl \
+    --output local/cstenten.dict --min-freq 50
+$ python3 scripts/czech_standard_dict.py \
+    --model /path/to/czech-morfflex.tagger \
+    --input local/cstenten.dict \
+    --output local/cstenten-canonical-bias.dict \
+    --min-score 30 --canonical-bonus 20
+```
+
+Build a high-precision Preferred list for readers of the full publication
+archive. The JSON analysis and lemma-frequency dictionary are reusable caches;
+the CSV records every accepted and rejected lemma.
+
+```
+$ python3 scripts/metropolitan_theme_dict.py local/metropolitan \
+    --preset broad-reader \
+    --model /path/to/czech-morfflex.tagger \
+    --standard local/cstenten.dict \
+    --output local/metropolitan-preferred.dict \
+    --report local/metropolitan-preferred.csv \
+    --analysis-cache local/metropolitan-analysis.json
+```
+
+For a crossword tied to one edition, use the edition preset and the archive
+analysis to reject recurring publication boilerplate:
+
+```
+$ python3 scripts/metropolitan_theme_dict.py path/to/issue.pdf \
+    --preset edition-reader \
+    --model /path/to/czech-morfflex.tagger \
+    --standard local/cstenten.dict \
+    --output local/issue-preferred.dict \
+    --report local/issue-preferred.csv \
+    --analysis-cache local/issue-analysis.json \
+    --background-analysis local/metropolitan-analysis.json
+```
+
+Existing analysis and standard-lemma caches are reused when their source
+fingerprints match. Pass `--refresh-analysis` or `--refresh-standard-lemmas`
+only to request an intentional rebuild.
+
+Then run the adaptive multicore search. Omitting `--cores` uses every available
+core:
+
+```
+$ cargo run --release -- \
+    --preferred-wordlist local/metropolitan-preferred.dict \
+    --wordlist local/cstenten-canonical-bias.dict \
+    --ignore-diacritics --min-score 38 --max-shared-substring 5 \
+    --timeout 900 grid.txt
+```
+
+For the edition-specific workflow, run the same search with
+`--preferred-wordlist local/issue-preferred.dict` instead.
+
 ### Acknowledgments
 
 * The backtracking search implementation in this library owes a lot to
