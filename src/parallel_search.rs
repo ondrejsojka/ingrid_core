@@ -133,9 +133,9 @@ fn cancel_matching(active: &HashMap<u64, ActiveWorker>, predicate: impl Fn(usize
 /// One worker starts at zero to establish a baseline fill quickly; the rest start at evenly
 /// distributed preferred-word minima. A success at `N` cancels every worker whose minimum is at
 /// most the success's actual preferred count, while harder workers keep running. A hard failure at
-/// `N` symmetrically cancels minima at least `N`. Freed cores bisect the remaining target gaps; once
-/// every distinct target is represented, extra cores run independent RNG streams for the
-/// still-viable targets.
+/// `N` symmetrically cancels minima at least `N`. A freed core first targets one more than the
+/// incumbent to guarantee incremental anytime progress; remaining cores bisect unexplored target
+/// gaps and, once every distinct target is represented, run independent RNG streams.
 #[allow(clippy::too_many_lines)]
 pub fn find_best_fill(
     config: &GridConfig,
@@ -199,6 +199,10 @@ pub fn find_best_fill(
                     }
                 };
                 let target = queued_target
+                    // Always keep one worker on the smallest count that would improve the
+                    // incumbent. This produces steady anytime progress while the remaining
+                    // workers continue probing harder, distributed targets.
+                    .or_else(|| (!represented.contains(&lower)).then_some(lower))
                     .or_else(|| next_unrepresented_target(lower, upper, &represented))
                     .or_else(|| duplicate_target(lower, upper, &active));
                 let Some(target) = target else {
