@@ -1,18 +1,92 @@
 use clap::Parser;
 use ingrid_core::backtracking_search::FillFailure;
 use ingrid_core::grid_config::{generate_grid_config_from_template_string, render_grid};
-use ingrid_core::parallel_search::find_best_fill;
+use ingrid_core::parallel_search::{
+    find_best_fill, find_best_fill_with_observer, SearchEvent, SearchEventKind, SearchEventResult,
+};
 use ingrid_core::word_list::{
     normalize_word, NormalizationSettings, WordList, WordListSourceConfig,
     WordListSourceConfigProvider,
 };
 use std::collections::HashSet;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::fs;
+use std::io::{self, Write};
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 const STWL_RAW: &str = include_str!("../resources/spreadthewordlist.dict");
+
+const SEARCH_LOG_HEADER: &str = "elapsed_ms,event,worker_id,target,active_workers,incumbent_preferred_words,impossible_from,fixed_preferred_words,discovered_preferred_words,states,backtracks,retries,result\n";
+
+struct CsvOption<T>(Option<T>);
+
+impl<T: Display> Display for CsvOption<T> {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        if let Some(value) = &self.0 {
+            value.fmt(formatter)?;
+        }
+        Ok(())
+    }
+}
+
+fn search_event_kind_csv(kind: SearchEventKind) -> &'static str {
+    match kind {
+        SearchEventKind::WorkerStart => "worker_start",
+        SearchEventKind::Success => "success",
+        SearchEventKind::HardFailure => "hard_failure",
+        SearchEventKind::Abort => "abort",
+        SearchEventKind::Timeout => "timeout",
+        SearchEventKind::IncumbentImprovement => "incumbent_improvement",
+        SearchEventKind::FinalReturn => "final_return",
+    }
+}
+
+fn search_event_result_csv(result: SearchEventResult) -> &'static str {
+    match result {
+        SearchEventResult::Success => "success",
+        SearchEventResult::HardFailure => "hard_failure",
+        SearchEventResult::Abort => "abort",
+        SearchEventResult::Timeout => "timeout",
+    }
+}
+
+struct SearchCsvLog {
+    file: fs::File,
+}
+
+impl SearchCsvLog {
+    fn open(path: &str) -> io::Result<Self> {
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        if file.metadata()?.len() == 0 {
+            file.write_all(SEARCH_LOG_HEADER.as_bytes())?;
+        }
+        Ok(Self { file })
+    }
+
+    fn write_event(&mut self, event: SearchEvent) -> io::Result<()> {
+        let row = format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            event.elapsed.as_millis(),
+            search_event_kind_csv(event.kind),
+            CsvOption(event.worker_id),
+            CsvOption(event.target),
+            event.active_worker_count,
+            CsvOption(event.incumbent_preferred_word_count),
+            event.impossible_from,
+            event.fixed_preferred_word_count,
+            CsvOption(event.discovered_preferred_word_count),
+            CsvOption(event.states),
+            CsvOption(event.backtracks),
+            CsvOption(event.retries),
+            CsvOption(event.result.map(search_event_result_csv)),
+        );
+        self.file.write_all(row.as_bytes())
+    }
+}
 
 /// ingrid_core: Command-line crossword generation tool
 #[derive(Parser, Debug)]
@@ -48,6 +122,10 @@ struct Args {
     /// Maximum search time in seconds; 0 waits for a proven optimum
     #[arg(long, default_value_t = 60)]
     timeout: u64,
+
+    /// Append scheduler convergence telemetry to this CSV path
+    #[arg(long, value_name = "PATH")]
+    search_log: Option<String>,
 
     /// Print timing information along with the grid
     #[arg(short, long, default_value_t = false)]
@@ -180,11 +258,35 @@ fn main() -> Result<(), Error> {
         generate_grid_config_from_template_string(word_list, &raw_grid_content, args.min_score);
 
     let timeout = (args.timeout != 0).then(|| Duration::from_secs(args.timeout));
-    let result = find_best_fill(
-        &grid_config.to_config_ref(),
-        timeout,
-        args.cores.map(NonZeroUsize::get),
-    )
+    let worker_count = args.cores.map(NonZeroUsize::get);
+    let result = if let Some(search_log_path) = args.search_log.as_deref() {
+        let mut search_log = SearchCsvLog::open(search_log_path).map_err(|error| {
+            Error(format!(
+                "Couldn't open search log '{search_log_path}': {error}"
+            ))
+        })?;
+        let mut search_log_error = None;
+        let result = find_best_fill_with_observer(
+            &grid_config.to_config_ref(),
+            timeout,
+            worker_count,
+            |event| {
+                if search_log_error.is_none() {
+                    if let Err(error) = search_log.write_event(event) {
+                        search_log_error = Some(error);
+                    }
+                }
+            },
+        );
+        if let Some(error) = search_log_error {
+            return Err(Error(format!(
+                "Couldn't write search log '{search_log_path}': {error}"
+            )));
+        }
+        result
+    } else {
+        find_best_fill(&grid_config.to_config_ref(), timeout, worker_count)
+    }
     .map_err(fill_failure_error)?;
 
     let fill_time = start.elapsed() - word_list_time;
@@ -195,9 +297,11 @@ fn main() -> Result<(), Error> {
     );
 
     if args.time {
+        let discovered_preferred_word_count =
+            result.preferred_word_count - result.fixed_preferred_word_count;
         eprintln!(
-            "{word_list_time:?} loading word lists, {fill_time:?} finding fill, {} preferred words",
-            result.preferred_word_count
+            "{word_list_time:?} loading word lists, {fill_time:?} finding fill; preferred words: {} total, {} fixed, {discovered_preferred_word_count} discovered",
+            result.preferred_word_count, result.fixed_preferred_word_count
         );
     }
 
@@ -206,14 +310,18 @@ fn main() -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{fill_failure_error, Args};
+    use super::{fill_failure_error, Args, SearchCsvLog, SEARCH_LOG_HEADER};
     use clap::Parser;
     use ingrid_core::backtracking_search::FillFailure;
+    use ingrid_core::parallel_search::{SearchEvent, SearchEventKind, SearchEventResult};
+    use std::fs;
+    use std::time::Duration;
 
     #[test]
     fn cli_search_timeout_defaults_to_one_minute() {
         let args = Args::try_parse_from(["ingrid_core", "grid.txt"]).unwrap();
         assert_eq!(args.timeout, 60);
+        assert!(args.search_log.is_none());
     }
 
     #[test]
@@ -221,6 +329,14 @@ mod tests {
         let args =
             Args::try_parse_from(["ingrid_core", "--ignore-diacritics", "grid.txt"]).unwrap();
         assert!(args.ignore_diacritics);
+    }
+
+    #[test]
+    fn cli_accepts_search_log_path() {
+        let args =
+            Args::try_parse_from(["ingrid_core", "--search-log", "telemetry.csv", "grid.txt"])
+                .unwrap();
+        assert_eq!(args.search_log.as_deref(), Some("telemetry.csv"));
     }
 
     #[test]
@@ -236,6 +352,53 @@ mod tests {
         assert_eq!(
             format!("{:?}", fill_failure_error(FillFailure::Abort)),
             "Fill canceled"
+        );
+    }
+
+    #[test]
+    fn search_log_appends_one_header_and_complete_event_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("search.csv");
+        let returned = SearchEvent {
+            elapsed: Duration::from_millis(1_234),
+            kind: SearchEventKind::FinalReturn,
+            worker_id: None,
+            target: None,
+            active_worker_count: 0,
+            incumbent_preferred_word_count: Some(7),
+            impossible_from: 8,
+            fixed_preferred_word_count: 2,
+            discovered_preferred_word_count: Some(5),
+            states: None,
+            backtracks: None,
+            retries: None,
+            result: Some(SearchEventResult::Success),
+        };
+        let aborted = SearchEvent {
+            elapsed: Duration::from_millis(2_000),
+            kind: SearchEventKind::Abort,
+            worker_id: Some(9),
+            target: Some(4),
+            active_worker_count: 2,
+            result: Some(SearchEventResult::Abort),
+            ..returned
+        };
+
+        SearchCsvLog::open(path.to_str().unwrap())
+            .and_then(|mut log| log.write_event(returned))
+            .unwrap();
+        SearchCsvLog::open(path.to_str().unwrap())
+            .and_then(|mut log| log.write_event(aborted))
+            .unwrap();
+
+        let contents = fs::read_to_string(path).unwrap();
+        assert_eq!(
+            contents.lines().collect::<Vec<_>>(),
+            vec![
+                SEARCH_LOG_HEADER.trim_end(),
+                "1234,final_return,,,0,7,8,2,5,,,,success",
+                "2000,abort,9,4,2,7,8,2,5,,,,abort",
+            ]
         );
     }
 }

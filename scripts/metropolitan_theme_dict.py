@@ -59,7 +59,7 @@ DEFAULT_STOPWORDS = {
     "zugalsko",
 }
 PROPER_MARKER_RE = re.compile(r"_;([A-Za-z])", re.UNICODE)
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 3
 STANDARD_LEMMA_VERSION = 1
 REPORT_FIELDS = [
     "lemma",
@@ -261,44 +261,47 @@ def normalized_line(line: str) -> str:
     return re.sub(r"\d+", "#", " ".join(line.casefold().split()))
 
 
+def page_edge_indices(lines: list[str], edge_line_count: int = 2) -> set[int]:
+    nonempty = [index for index, line in enumerate(lines) if normalized_line(line)]
+    return set(nonempty[:edge_line_count] + nonempty[-edge_line_count:])
+
+
 def remove_repeated_lines(
     documents: list[tuple[Path, str]], minimum_documents: int
 ) -> list[tuple[Path, str]]:
-    line_documents: collections.Counter[str] = collections.Counter()
+    edge_line_documents: collections.Counter[str] = collections.Counter()
     repeated_within_documents: set[str] = set()
     for _, text in documents:
-        line_documents.update(
-            {
-                key
-                for line in text.splitlines()
-                if (key := normalized_line(line))
-            }
-        )
+        document_edge_lines: collections.Counter[str] = collections.Counter()
+        for page in text.split("\f"):
+            lines = page.splitlines()
+            for index in page_edge_indices(lines):
+                document_edge_lines[normalized_line(lines[index])] += 1
+        edge_line_documents.update(document_edge_lines)
         repeated_within_documents.update(
-            line
-            for line, count in collections.Counter(
-                normalized_line(raw_line)
-                for raw_line in text.splitlines()
-                if normalized_line(raw_line)
-            ).items()
-            if count >= 4
+            line for line, count in document_edge_lines.items() if count >= 4
         )
     repeated = repeated_within_documents | {
         line
-        for line, count in line_documents.items()
+        for line, count in edge_line_documents.items()
         if count >= minimum_documents
     }
-    return [
-        (
-            path,
-            "\n".join(
-                line
-                for line in text.splitlines()
-                if normalized_line(line) not in repeated
-            ),
-        )
-        for path, text in documents
-    ]
+
+    cleaned_documents = []
+    for path, text in documents:
+        cleaned_pages = []
+        for page in text.split("\f"):
+            lines = page.splitlines()
+            edge_indices = page_edge_indices(lines)
+            cleaned_pages.append(
+                "\n".join(
+                    line
+                    for index, line in enumerate(lines)
+                    if index not in edge_indices or normalized_line(line) not in repeated
+                )
+            )
+        cleaned_documents.append((path, "\f".join(cleaned_pages)))
+    return cleaned_documents
 
 
 def proper_markers(tagged_lemma: str) -> set[str]:
@@ -582,7 +585,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--boilerplate-documents",
         type=int,
         default=4,
-        help="Drop exact normalized lines repeated in at least this many inputs",
+        help="Drop recurring normalized lines only at PDF page edges",
     )
     parser.add_argument("--min-length", type=int, default=5)
     parser.add_argument("--min-count", type=int, default=5)

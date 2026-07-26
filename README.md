@@ -130,6 +130,12 @@ $ python3 scripts/czech_standard_dict.py \
     --min-score 30 --canonical-bonus 20
 ```
 
+By default, the Standard filter keeps analyzed noun, adjective, verb, and
+adverb forms, excludes entries whose only analyses are foreign/unknown, and
+retains noncanonical inflections. Use `--allowlist` and `--denylist` for
+reviewed exceptions; add `--drop-noncanonical` only for intentionally strict
+experiments.
+
 Build a high-precision Preferred list for readers of the full publication
 archive. The JSON analysis and lemma-frequency dictionary are reusable caches;
 the CSV records every accepted and rejected lemma.
@@ -158,19 +164,29 @@ $ python3 scripts/metropolitan_theme_dict.py path/to/issue.pdf \
     --background-analysis local/metropolitan-analysis.json
 ```
 
+To locate the publication source and surrounding text for a candidate entry
+without generating a clue:
+
+```
+$ python3 scripts/metropolitan_word_sources.py local/metropolitan \
+    --model /path/to/czech-morfflex.tagger -q Jinacovice
+```
+
 Existing analysis and standard-lemma caches are reused when their source
 fingerprints match. Pass `--refresh-analysis` or `--refresh-standard-lemmas`
 only to request an intentional rebuild.
 
 Then run the adaptive multicore search. Omitting `--cores` uses every available
-core:
+core. Preserve diacritics by default; use `--ignore-diacritics` only for an
+explicit accent-folded experiment. `--search-log` appends scheduler targets,
+incumbent improvements, failures, and cancellations to CSV.
 
 ```
 $ cargo run --release -- \
     --preferred-wordlist local/metropolitan-preferred.dict \
     --wordlist local/cstenten-canonical-bias.dict \
-    --ignore-diacritics --min-score 38 --max-shared-substring 5 \
-    --timeout 900 grid.txt
+    --min-score 30 --max-shared-substring 5 \
+    --timeout 900 --search-log local/search.csv grid.txt
 ```
 
 For the edition-specific workflow, run the same search with
