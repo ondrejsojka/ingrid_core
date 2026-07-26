@@ -76,6 +76,8 @@ Options:
           Minimum allowable word score [default: 50]
       --max-shared-substring <MAX_SHARED_SUBSTRING>
           Maximum shared substring length between entries [default: none]
+      --ignore-diacritics
+          Convert accented letters to their unaccented forms in the grid and word lists
       --cores <CORES>
           Number of CPU cores to use [default: all available cores]
       --timeout <TIMEOUT>
@@ -87,6 +89,9 @@ Options:
   -V, --version
           Print version
 ```
+
+`--ignore-diacritics` can substantially enlarge compatible crossing domains for languages that use
+accented letters. Output is unaccented in that mode.
 
 For example:
 

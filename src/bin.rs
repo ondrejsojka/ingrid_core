@@ -2,13 +2,15 @@ use clap::Parser;
 use ingrid_core::backtracking_search::FillFailure;
 use ingrid_core::grid_config::{generate_grid_config_from_template_string, render_grid};
 use ingrid_core::parallel_search::find_best_fill;
-use ingrid_core::word_list::{WordList, WordListSourceConfig, WordListSourceConfigProvider};
+use ingrid_core::word_list::{
+    normalize_word, NormalizationSettings, WordList, WordListSourceConfig,
+    WordListSourceConfigProvider,
+};
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::fs;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
-use unicode_normalization::UnicodeNormalization;
 
 const STWL_RAW: &str = include_str!("../resources/spreadthewordlist.dict");
 
@@ -34,6 +36,10 @@ struct Args {
     /// Maximum shared substring length between entries [default: none]
     #[arg(long)]
     max_shared_substring: Option<usize>,
+
+    /// Convert accented letters to their unaccented forms in the grid and word lists
+    #[arg(long, default_value_t = false)]
+    ignore_diacritics: bool,
 
     /// Number of CPU cores to use [default: all available cores]
     #[arg(long)]
@@ -70,11 +76,15 @@ fn fill_failure_error(failure: FillFailure) -> Error {
 fn main() -> Result<(), Error> {
     let args = Args::parse();
 
+    let normalization = args.ignore_diacritics.then_some(NormalizationSettings {
+        strip_punctuation: false,
+        convert_diacritics: true,
+    });
     let raw_grid_content = fs::read_to_string(&args.grid_path)
         .map_err(|_| Error(format!("Couldn't read file '{}'", args.grid_path)))?
         .trim()
         .lines()
-        .map(|line| line.trim().to_lowercase().nfc().collect::<String>())
+        .map(|line| normalize_word(line.trim(), &normalization))
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
@@ -118,7 +128,7 @@ fn main() -> Result<(), Error> {
             provider: WordListSourceConfigProvider::File {
                 path: preferred_wordlist_path.into(),
             },
-            normalization: None,
+            normalization: normalization.clone(),
         });
     }
     source_configs.push(match args.wordlist {
@@ -128,13 +138,13 @@ fn main() -> Result<(), Error> {
             provider: WordListSourceConfigProvider::File {
                 path: wordlist_path.into(),
             },
-            normalization: None,
+            normalization: normalization.clone(),
         },
         None => WordListSourceConfig {
             id: "standard".into(),
             enabled: true,
             provider: WordListSourceConfigProvider::FileContents { contents: STWL_RAW },
-            normalization: None,
+            normalization,
         },
     });
 
@@ -204,6 +214,13 @@ mod tests {
     fn cli_search_timeout_defaults_to_one_minute() {
         let args = Args::try_parse_from(["ingrid_core", "grid.txt"]).unwrap();
         assert_eq!(args.timeout, 60);
+    }
+
+    #[test]
+    fn cli_accepts_diacritic_insensitive_mode() {
+        let args =
+            Args::try_parse_from(["ingrid_core", "--ignore-diacritics", "grid.txt"]).unwrap();
+        assert!(args.ignore_diacritics);
     }
 
     #[test]

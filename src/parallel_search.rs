@@ -57,12 +57,13 @@ pub fn maximum_preferred_words(config: &GridConfig) -> usize {
 
 fn initial_targets(maximum: usize, worker_count: usize) -> VecDeque<usize> {
     let mut seen = HashSet::new();
-    (0..worker_count)
-        .filter_map(|index| {
+    (0..worker_count.saturating_sub(1))
+        .map(|index| {
             let numerator = (maximum as u128) * ((worker_count - index) as u128);
-            let target = numerator.div_ceil(worker_count as u128) as usize;
-            seen.insert(target).then_some(target)
+            numerator.div_ceil(worker_count as u128) as usize
         })
+        .chain(std::iter::once(0))
+        .filter(|&target| seen.insert(target))
         .collect()
 }
 
@@ -129,11 +130,12 @@ fn cancel_matching(active: &HashMap<u64, ActiveWorker>, predicate: impl Fn(usize
 /// Search on the requested number of CPU cores and return the fill with the largest provably
 /// attainable number of preferred-tier words.
 ///
-/// Workers start at evenly distributed preferred-word minima. A success at `N` cancels every
-/// worker whose minimum is at most the success's actual preferred count, while harder workers keep
-/// running. A hard failure at `N` symmetrically cancels minima at least `N`. Freed cores bisect the
-/// remaining target gaps; once every distinct target is represented, extra cores run independent
-/// RNG streams for the still-viable targets.
+/// One worker starts at zero to establish a baseline fill quickly; the rest start at evenly
+/// distributed preferred-word minima. A success at `N` cancels every worker whose minimum is at
+/// most the success's actual preferred count, while harder workers keep running. A hard failure at
+/// `N` symmetrically cancels minima at least `N`. Freed cores bisect the remaining target gaps; once
+/// every distinct target is represented, extra cores run independent RNG streams for the
+/// still-viable targets.
 #[allow(clippy::too_many_lines)]
 pub fn find_best_fill(
     config: &GridConfig,
@@ -328,7 +330,11 @@ mod tests {
     fn distributes_initial_targets_across_the_full_range() {
         assert_eq!(
             initial_targets(1_000, 10).into_iter().collect::<Vec<_>>(),
-            vec![1_000, 900, 800, 700, 600, 500, 400, 300, 200, 100]
+            vec![1_000, 900, 800, 700, 600, 500, 400, 300, 200, 0]
+        );
+        assert_eq!(
+            initial_targets(1_000, 1).into_iter().collect::<Vec<_>>(),
+            vec![0]
         );
     }
 
