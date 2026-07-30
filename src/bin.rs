@@ -4,6 +4,10 @@ use ingrid_core::grid_config::{generate_grid_config_from_template_string, render
 use ingrid_core::parallel_search::{
     find_best_fill, find_best_fill_with_observer, SearchEvent, SearchEventKind, SearchEventResult,
 };
+use ingrid_core::variant_estimate::{
+    estimate_variants, VariantEstimate, VariantEstimateMethod, VariantEstimateOptions,
+    VariantEstimateStatus,
+};
 use ingrid_core::word_list::{
     normalize_word, NormalizationSettings, WordList, WordListSourceConfig,
     WordListSourceConfigProvider,
@@ -131,6 +135,22 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     search_log: Option<String>,
 
+    /// Estimate how many distinct fills are at least as Preferred-heavy as the returned fill
+    #[arg(long, default_value_t = false)]
+    estimate_variants: bool,
+
+    /// Maximum estimator/search runtime ratio; values above 0.5 are capped
+    #[arg(long, default_value_t = 0.45)]
+    estimate_runtime_ratio: f32,
+
+    /// Absolute estimator time cap in seconds
+    #[arg(long)]
+    estimate_max_time: Option<u64>,
+
+    /// Random seed for variant-estimation walks
+    #[arg(long, default_value_t = 0)]
+    estimate_seed: u64,
+
     /// Print timing information along with the grid
     #[arg(short, long, default_value_t = false)]
     time: bool,
@@ -155,9 +175,82 @@ fn fill_failure_error(failure: FillFailure) -> Error {
     })
 }
 
+fn print_variant_estimate(estimate: &VariantEstimate) {
+    eprintln!(
+        "variant estimate for preferred >= {}:",
+        estimate.minimum_preferred_words
+    );
+    let capped = if estimate.known_distinct_fills_capped {
+        "+"
+    } else {
+        ""
+    };
+    eprintln!(
+        "known distinct fills: {}{capped}",
+        estimate.known_distinct_fills
+    );
+    match estimate.status {
+        VariantEstimateStatus::Estimated => {
+            let count = estimate.estimated_fill_count.unwrap();
+            let bits = estimate.estimated_slack_bits.unwrap();
+            eprintln!("estimated fills: ~{count:.3e}");
+            eprintln!(
+                "estimated additional variants: ~{:.3e}",
+                (count - 1.0).max(0.0)
+            );
+            eprintln!("estimated slack: {bits:.1} bits");
+            if let Some((lower, upper)) = estimate.interval_slack_bits {
+                eprintln!("interval: {lower:.1}-{upper:.1} bits");
+            }
+        }
+        VariantEstimateStatus::ExactOne => {
+            eprintln!("estimated fills: 1 (exact)");
+            eprintln!("estimated additional variants: 0");
+            eprintln!("estimated slack: 0.0 bits");
+            eprintln!("interval: 0.0-0.0 bits");
+        }
+        VariantEstimateStatus::ExactZero => {
+            eprintln!("estimated fills: 0 (exact)");
+            eprintln!("estimated slack: -infinity");
+        }
+        VariantEstimateStatus::InsufficientBudget => {
+            eprintln!("estimate: insufficient budget");
+        }
+        VariantEstimateStatus::InsufficientEvidence => {
+            eprintln!("estimate: insufficient evidence");
+        }
+        VariantEstimateStatus::InvalidOptions => {
+            eprintln!("estimate: invalid options");
+        }
+    }
+    match estimate.method {
+        VariantEstimateMethod::ImportanceWalks => eprintln!(
+            "accepted walks: {} / {}",
+            estimate.accepted_walk_count, estimate.walk_count
+        ),
+        VariantEstimateMethod::SequentialMonteCarlo => eprintln!(
+            "accepted SMC replicates: {} / {}",
+            estimate.accepted_walk_count, estimate.walk_count
+        ),
+        VariantEstimateMethod::Exact => {}
+    }
+    if estimate.method != VariantEstimateMethod::Exact {
+        eprintln!("effective samples: {:.1}", estimate.effective_sample_size);
+    }
+    eprintln!(
+        "estimator time: {:.3} s ({:.1}% of search time)",
+        estimate.elapsed.as_secs_f64(),
+        100.0 * estimate.search_runtime_ratio
+    );
+}
+
 fn main() -> Result<(), Error> {
     let args = Args::parse();
-
+    if !args.estimate_runtime_ratio.is_finite() || args.estimate_runtime_ratio < 0.0 {
+        return Err(Error(
+            "--estimate-runtime-ratio must be a finite nonnegative number".into(),
+        ));
+    }
     let normalization = args.ignore_diacritics.then_some(NormalizationSettings {
         strip_punctuation: false,
         convert_diacritics: true,
@@ -284,6 +377,7 @@ fn main() -> Result<(), Error> {
 
     let timeout = (args.timeout != 0).then(|| Duration::from_secs(args.timeout));
     let worker_count = args.cores.map(NonZeroUsize::get);
+    let search_start = Instant::now();
     let result = if let Some(search_log_path) = args.search_log.as_deref() {
         let mut search_log = SearchCsvLog::open(search_log_path).map_err(|error| {
             Error(format!(
@@ -314,12 +408,28 @@ fn main() -> Result<(), Error> {
     }
     .map_err(fill_failure_error)?;
 
-    let fill_time = start.elapsed() - word_list_time;
+    let fill_time = search_start.elapsed();
 
     println!(
         "{}",
         render_grid(&grid_config.to_config_ref(), &result.fill.choices).replace('.', "#")
     );
+
+    if args.estimate_variants {
+        let estimate = estimate_variants(
+            &grid_config.to_config_ref(),
+            &result,
+            fill_time,
+            VariantEstimateOptions {
+                runtime_ratio: args.estimate_runtime_ratio.min(0.5),
+                worker_count,
+                rng_seed: args.estimate_seed,
+                maximum_duration: args.estimate_max_time.map(Duration::from_secs),
+                ..VariantEstimateOptions::default()
+            },
+        );
+        print_variant_estimate(&estimate);
+    }
 
     if args.time {
         let discovered_preferred_word_count =

@@ -103,6 +103,12 @@ pub trait ArcConsistencyAdapter {
     /// What is the single remaining option for this slot, given eliminations made both before and
     /// during the arc-consistency process (with the latter provided as a param)?
     fn get_single_option(&self, slot_id: SlotId, eliminations: &EliminationSet) -> Option<WordId>;
+
+    /// Whether this propagation pass should stop without treating the partial state as a
+    /// contradiction.
+    fn should_abort(&self) -> bool {
+        false
+    }
 }
 
 /// Result from a failed call to `establish_arc_consistency`, reflecting how responsible each
@@ -197,6 +203,12 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
     // For each slot, a mutable reference to a structure for storing eliminations.
     elimination_sets: &mut [EliminationSet],
 ) -> ArcConsistencyResult {
+    if adapter.should_abort() {
+        return Err(ArcConsistencyFailure {
+            weight_updates: HashMap::new(),
+        });
+    }
+
     let mut slot_states: Vec<ArcConsistencySlotState> = config
         .slot_configs
         .iter()
@@ -383,8 +395,18 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
     // the overall process.
     //
     loop {
+        if adapter.should_abort() {
+            return Err(ArcConsistencyFailure {
+                weight_updates: HashMap::new(),
+            });
+        }
         // First, run the AC-3 algorithm, propagating eliminations until the queue is empty.
         loop {
+            if adapter.should_abort() {
+                return Err(ArcConsistencyFailure {
+                    weight_updates: HashMap::new(),
+                });
+            }
             // Identify the queued slot with the lowest `dom/wdeg`, based on our live domain sizes.
             let slot_id = (0..config.slot_configs.len())
                 .filter(|&slot_id| slot_states[slot_id].queued_cell_idxs.is_some())
@@ -421,7 +443,17 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                 let other_slot_config = &config.slot_configs[other_slot_id];
                 let other_slot_options = &config.slot_options[other_slot_id];
 
-                for &slot_option_word_id in other_slot_options {
+                if adapter.should_abort() {
+                    return Err(ArcConsistencyFailure {
+                        weight_updates: HashMap::new(),
+                    });
+                }
+                for (option_index, &slot_option_word_id) in other_slot_options.iter().enumerate() {
+                    if option_index % 256 == 0 && adapter.should_abort() {
+                        return Err(ArcConsistencyFailure {
+                            weight_updates: HashMap::new(),
+                        });
+                    }
                     // If this word has already been eliminated, we don't need to check it again.
                     if adapter.is_word_eliminated(other_slot_id, slot_option_word_id)
                         || slot_states[other_slot_id]
@@ -463,6 +495,11 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
             .collect();
 
         for slot_id in singleton_propagation_slot_ids {
+            if adapter.should_abort() {
+                return Err(ArcConsistencyFailure {
+                    weight_updates: HashMap::new(),
+                });
+            }
             let slot_config = &config.slot_configs[slot_id];
             let word_id = adapter
                 .get_single_option(slot_id, slot_states[slot_id].eliminations)
@@ -474,6 +511,11 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                 .get_dupes_by_length((slot_config.length, word_id));
 
             for other_slot_id in 0..config.slot_configs.len() {
+                if adapter.should_abort() {
+                    return Err(ArcConsistencyFailure {
+                        weight_updates: HashMap::new(),
+                    });
+                }
                 if other_slot_id == slot_id || fixed_slots[other_slot_id] {
                     continue;
                 }
@@ -482,7 +524,12 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                 let later_slot_options = &config.slot_options[other_slot_id];
 
                 if let Some(dupe_ids) = dupes_by_length.get(&later_slot_config.length) {
-                    for &word_id in later_slot_options {
+                    for (option_index, &word_id) in later_slot_options.iter().enumerate() {
+                        if option_index % 256 == 0 && adapter.should_abort() {
+                            return Err(ArcConsistencyFailure {
+                                weight_updates: HashMap::new(),
+                            });
+                        }
                         if !adapter.is_word_eliminated(other_slot_id, word_id)
                             && dupe_ids.contains(&word_id)
                             && !slot_states[other_slot_id].eliminations.contains(word_id)

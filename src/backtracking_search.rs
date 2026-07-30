@@ -146,12 +146,21 @@ impl Slot {
     }
 
     /// Remove all eliminations that were created because of the last choice in the given slot.
-    fn clear_eliminations(&mut self, config: &GridConfig, slot_id: SlotId) {
+    fn clear_eliminations(
+        &mut self,
+        config: &GridConfig,
+        slot_id: SlotId,
+        deadline: Option<Instant>,
+    ) -> bool {
         for word_id in 0..self.eliminations.len() {
+            if word_id % 256 == 0 && deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return false;
+            }
             if self.eliminations[word_id] == Some(Some(slot_id)) {
                 self.remove_elimination(config, word_id);
             }
         }
+        true
     }
 
     /// Record a choice, shadowing the existing eliminations, glyph counts, etc.
@@ -261,32 +270,55 @@ enum ArcConsistencyMode {
     Elimination(Choice, Option<SlotId>),
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum MaintainResult {
+    Consistent,
+    Contradiction,
+    Abort,
+}
+
 fn can_satisfy_minimum_preferred_words(
     config: &GridConfig,
     slots: &[Slot],
     minimum_preferred_words: usize,
-) -> bool {
+    deadline: Option<Instant>,
+) -> Option<bool> {
     if minimum_preferred_words == 0 {
-        return true;
+        return Some(true);
     }
 
-    slots
-        .iter()
-        .filter(|slot| {
-            slot.fixed_word_id.map_or_else(
-                || {
-                    config.slot_options[slot.id].iter().any(|&word_id| {
-                        slot.eliminations[word_id].is_none()
-                            && config.word_list.word_tier((slot.length, word_id))
-                                == WordTier::Preferred
-                    })
-                },
-                |word_id| config.word_list.word_tier((slot.length, word_id)) == WordTier::Preferred,
-            )
-        })
-        .take(minimum_preferred_words)
-        .count()
-        == minimum_preferred_words
+    let mut possible_preferred_slots = 0;
+    for slot in slots {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return None;
+        }
+        let has_preferred = if let Some(word_id) = slot.fixed_word_id {
+            config.word_list.word_tier((slot.length, word_id)) == WordTier::Preferred
+        } else {
+            let mut found = false;
+            for (option_index, &word_id) in config.slot_options[slot.id].iter().enumerate() {
+                if option_index % 256 == 0
+                    && deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                {
+                    return None;
+                }
+                if slot.eliminations[word_id].is_none()
+                    && config.word_list.word_tier((slot.length, word_id)) == WordTier::Preferred
+                {
+                    found = true;
+                    break;
+                }
+            }
+            found
+        };
+        if has_preferred {
+            possible_preferred_slots += 1;
+            if possible_preferred_slots == minimum_preferred_words {
+                return Some(true);
+            }
+        }
+    }
+    Some(false)
 }
 
 /// Within the context of a fill attempt, either establish initial arc consistency, propagate the
@@ -302,10 +334,12 @@ fn maintain_arc_consistency(
     time: &mut Duration,
     elimination_sets: &mut [EliminationSet],
     minimum_preferred_words: usize,
-) -> bool {
+    deadline: Option<Instant>,
+) -> MaintainResult {
     struct Adapter<'a> {
         config: &'a GridConfig<'a>,
         slots: &'a mut [Slot],
+        deadline: Option<Instant>,
     }
 
     impl ArcConsistencyAdapter for Adapter<'_> {
@@ -356,6 +390,11 @@ fn maintain_arc_consistency(
                     })
                     .copied()
             })
+        }
+
+        fn should_abort(&self) -> bool {
+            self.deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
         }
     }
 
@@ -422,7 +461,11 @@ fn maintain_arc_consistency(
 
     let success = match establish_arc_consistency(
         config,
-        &Adapter { config, slots },
+        &Adapter {
+            config,
+            slots,
+            deadline,
+        },
         &remaining_option_counts,
         crossing_weights,
         slot_weights,
@@ -434,22 +477,63 @@ fn maintain_arc_consistency(
         // bound. The latter is not a binary arc constraint, so it must be checked against all live
         // slot domains after AC has settled.
         Ok(()) => {
+            let mut applied_eliminations: Vec<(SlotId, WordId)> = Vec::new();
             for (slot_id, eliminations) in elimination_sets.iter().enumerate() {
-                for &word_id in &eliminations.eliminated_ids {
+                for (option_index, &word_id) in eliminations.eliminated_ids.iter().enumerate() {
+                    if option_index % 256 == 0
+                        && deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                    {
+                        for &(applied_slot_id, applied_word_id) in applied_eliminations.iter().rev()
+                        {
+                            slots[applied_slot_id].remove_elimination(config, applied_word_id);
+                        }
+                        match mode {
+                            ArcConsistencyMode::Choice(choice) => {
+                                slots[choice.slot_id].clear_choice();
+                            }
+                            ArcConsistencyMode::Elimination(choice, ..) => {
+                                slots[choice.slot_id].remove_elimination(config, choice.word_id);
+                            }
+                            ArcConsistencyMode::Initial => {}
+                        }
+                        return MaintainResult::Abort;
+                    }
                     slots[slot_id].add_elimination(config, word_id, blamed_slot_id);
+                    applied_eliminations.push((slot_id, word_id));
                 }
             }
 
-            if can_satisfy_minimum_preferred_words(config, slots, minimum_preferred_words) {
-                true
-            } else {
-                // The cardinality check rejected an otherwise arc-consistent provisional update.
-                // Roll back both AC's eliminations and the choice/elimination that triggered it.
-                for (slot_id, eliminations) in elimination_sets.iter().enumerate() {
-                    for &word_id in &eliminations.eliminated_ids {
+            match can_satisfy_minimum_preferred_words(
+                config,
+                slots,
+                minimum_preferred_words,
+                deadline,
+            ) {
+                Some(true) => MaintainResult::Consistent,
+                preferred_result => {
+                    for &(slot_id, word_id) in applied_eliminations.iter().rev() {
                         slots[slot_id].remove_elimination(config, word_id);
                     }
+                    match mode {
+                        ArcConsistencyMode::Choice(choice) => {
+                            slots[choice.slot_id].clear_choice();
+                        }
+                        ArcConsistencyMode::Elimination(choice, ..) => {
+                            slots[choice.slot_id].remove_elimination(config, choice.word_id);
+                        }
+                        ArcConsistencyMode::Initial => {}
+                    }
+                    if preferred_result.is_none() {
+                        return MaintainResult::Abort;
+                    }
+                    MaintainResult::Contradiction
                 }
+            }
+        }
+
+        // If we failed, we need to undo any provisional changes we made above and update our
+        Err(ArcConsistencyFailure { weight_updates }) => {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 match mode {
                     ArcConsistencyMode::Choice(choice) => {
                         slots[choice.slot_id].clear_choice();
@@ -459,13 +543,8 @@ fn maintain_arc_consistency(
                     }
                     ArcConsistencyMode::Initial => {}
                 }
-                false
+                return MaintainResult::Abort;
             }
-        }
-
-        // If we failed, we need to undo any provisional changes we made above and update our
-        // crossing weights to reflect the causes of the failure.
-        Err(ArcConsistencyFailure { weight_updates }) => {
             match mode {
                 ArcConsistencyMode::Choice(choice) => {
                     slots[choice.slot_id].clear_choice();
@@ -484,13 +563,322 @@ fn maintain_arc_consistency(
                     + weight_updates.get(&slot_id).unwrap_or(&0.0);
             }
 
-            false
+            MaintainResult::Contradiction
         }
     };
 
     *time += start.elapsed();
 
     success
+}
+
+fn build_slots(config: &GridConfig, deadline: Option<Instant>) -> Option<Vec<Slot>> {
+    let mut slots = Vec::with_capacity(config.slot_configs.len());
+    for slot_config in config.slot_configs {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return None;
+        }
+        let glyph_counts_by_cell = build_glyph_counts_by_cell(
+            config.word_list,
+            slot_config.length,
+            &config.slot_options[slot_config.id],
+        );
+        let is_fixed = slot_config
+            .complete_fill(config.fill, config.width)
+            .is_some();
+
+        slots.push(Slot {
+            id: slot_config.id,
+            length: slot_config.length,
+            eliminations: vec![None; config.word_list.words[slot_config.length].len()],
+            remaining_option_count: config.slot_options[slot_config.id].len(),
+            fixed_word_id: is_fixed.then(|| {
+                assert_eq!(config.slot_options[slot_config.id].len(), 1);
+                config.slot_options[slot_config.id][0]
+            }),
+            fixed_glyph_counts_by_cell: is_fixed.then_some(glyph_counts_by_cell.clone()),
+            glyph_counts_by_cell,
+        });
+    }
+    Some(slots)
+}
+
+fn build_elimination_sets(
+    config: &GridConfig,
+    deadline: Option<Instant>,
+) -> Option<Vec<EliminationSet>> {
+    let mut sets = Vec::with_capacity(config.slot_configs.len());
+    for slot_config in config.slot_configs {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return None;
+        }
+        sets.push(EliminationSet::new(
+            config.word_list.words[slot_config.length].len() + config.slot_configs.len(),
+        ));
+    }
+    Some(sets)
+}
+
+fn establish_initial_search_state(
+    config: &GridConfig,
+    slots: &mut [Slot],
+    crossing_weights: &mut [f32],
+    elimination_sets: &mut [EliminationSet],
+    minimum_preferred_words: usize,
+    deadline: Option<Instant>,
+) -> Result<Duration, FillFailure> {
+    let slot_weights = calculate_slot_weights(config, slots, crossing_weights);
+    let mut elapsed = Duration::default();
+    match maintain_arc_consistency(
+        config,
+        slots,
+        crossing_weights,
+        &slot_weights,
+        &ArcConsistencyMode::Initial,
+        &mut elapsed,
+        elimination_sets,
+        minimum_preferred_words,
+        deadline,
+    ) {
+        MaintainResult::Consistent => Ok(elapsed),
+        MaintainResult::Contradiction => Err(FillFailure::HardFailure),
+        MaintainResult::Abort => Err(FillFailure::Abort),
+    }
+}
+
+/// Reusable live solver state for algorithms that follow one assignment path at a time.
+///
+/// The ordinary backtracker and the variant estimator share the same slot representation and MAC
+/// implementation so duplicate, substring, fixed-entry, and Preferred-bound semantics cannot
+/// drift apart.
+pub(crate) struct LiveSearchState {
+    slots: Vec<Slot>,
+    crossing_weights: Vec<f32>,
+    elimination_sets: Vec<EliminationSet>,
+    deadline: Instant,
+}
+
+impl LiveSearchState {
+    pub(crate) fn new(
+        config: &GridConfig,
+        minimum_preferred_words: usize,
+        deadline: Instant,
+    ) -> Result<Self, FillFailure> {
+        let mut slots = build_slots(config, Some(deadline)).ok_or(FillFailure::Abort)?;
+        let mut crossing_weights = vec![1.0; config.crossing_count];
+        let mut elimination_sets =
+            build_elimination_sets(config, Some(deadline)).ok_or(FillFailure::Abort)?;
+        establish_initial_search_state(
+            config,
+            &mut slots,
+            &mut crossing_weights,
+            &mut elimination_sets,
+            minimum_preferred_words,
+            Some(deadline),
+        )?;
+        Ok(Self {
+            slots,
+            crossing_weights,
+            elimination_sets,
+            deadline,
+        })
+    }
+
+    pub(crate) fn fork(&self, config: &GridConfig, deadline: Instant) -> Option<Self> {
+        let mut slots = Vec::with_capacity(self.slots.len());
+        for source in &self.slots {
+            if Instant::now() >= deadline {
+                return None;
+            }
+            slots.push(source.clone());
+        }
+        Some(Self {
+            slots,
+            crossing_weights: self.crossing_weights.clone(),
+            elimination_sets: build_elimination_sets(config, Some(deadline))?,
+            deadline,
+        })
+    }
+
+    pub(crate) fn choose_next_slot(&self, config: &GridConfig) -> Result<Option<SlotId>, ()> {
+        if Instant::now() >= self.deadline {
+            return Err(());
+        }
+        let mut slot_weights = Vec::with_capacity(self.slots.len());
+        for slot_id in 0..self.slots.len() {
+            if Instant::now() >= self.deadline {
+                return Err(());
+            }
+            slot_weights.push(calculate_slot_weight(
+                config,
+                &self.slots,
+                &self.crossing_weights,
+                slot_id,
+            ));
+        }
+        let mut best = None;
+        for slot_id in 0..self.slots.len() {
+            if Instant::now() >= self.deadline {
+                return Err(());
+            }
+            if self.slots[slot_id].fixed_word_id.is_none()
+                && self.slots[slot_id].remaining_option_count > 1
+            {
+                let candidate = (
+                    FloatOrd(calculate_slot_priority(&self.slots, &slot_weights, slot_id)),
+                    slot_id,
+                );
+                if best.is_none_or(|best| candidate < best) {
+                    best = Some(candidate);
+                }
+            }
+        }
+        Ok(best.map(|(_, slot_id)| slot_id))
+    }
+
+    pub(crate) fn live_options(
+        &self,
+        config: &GridConfig,
+        slot_id: SlotId,
+        destination: &mut Vec<WordId>,
+    ) -> bool {
+        destination.clear();
+        for (option_index, &word_id) in config.slot_options[slot_id].iter().enumerate() {
+            if option_index % 256 == 0 && Instant::now() >= self.deadline {
+                return false;
+            }
+            if self.slots[slot_id].eliminations[word_id].is_none() {
+                destination.push(word_id);
+            }
+        }
+        true
+    }
+
+    pub(crate) fn apply_choice(
+        &mut self,
+        config: &GridConfig,
+        choice: &Choice,
+        minimum_preferred_words: usize,
+    ) -> MaintainResult {
+        let slot_weights = calculate_slot_weights(config, &self.slots, &self.crossing_weights);
+        let mut elapsed = Duration::default();
+        maintain_arc_consistency(
+            config,
+            &mut self.slots,
+            &mut self.crossing_weights,
+            &slot_weights,
+            &ArcConsistencyMode::Choice(choice.clone()),
+            &mut elapsed,
+            &mut self.elimination_sets,
+            minimum_preferred_words,
+            Some(self.deadline),
+        )
+    }
+
+    pub(crate) fn rollback_choices(
+        &mut self,
+        config: &GridConfig,
+        choices: &mut Vec<Choice>,
+    ) -> bool {
+        while let Some(choice) = choices.pop() {
+            if Instant::now() >= self.deadline {
+                return false;
+            }
+            self.slots[choice.slot_id].clear_choice();
+            for slot in &mut self.slots {
+                if Instant::now() >= self.deadline {
+                    return false;
+                }
+                if slot.id != choice.slot_id
+                    && slot.fixed_word_id.is_none()
+                    && !slot.clear_eliminations(config, choice.slot_id, Some(self.deadline))
+                {
+                    return false;
+                }
+            }
+        }
+        self.crossing_weights.fill(1.0);
+        true
+    }
+
+    pub(crate) fn complete_choices(&self, config: &GridConfig) -> Result<Option<Vec<Choice>>, ()> {
+        let mut choices = Vec::with_capacity(self.slots.len());
+        for slot in &self.slots {
+            if Instant::now() >= self.deadline {
+                return Err(());
+            }
+            let word_id = if let Some(word_id) = slot.fixed_word_id {
+                Some(word_id)
+            } else if slot.remaining_option_count == 1 {
+                let mut remaining = None;
+                for (option_index, &word_id) in config.slot_options[slot.id].iter().enumerate() {
+                    if option_index % 256 == 0 && Instant::now() >= self.deadline {
+                        return Err(());
+                    }
+                    if slot.eliminations[word_id].is_none() {
+                        remaining = Some(word_id);
+                        break;
+                    }
+                }
+                remaining
+            } else {
+                None
+            };
+            let Some(word_id) = word_id else {
+                return Ok(None);
+            };
+            choices.push(Choice {
+                slot_id: slot.id,
+                word_id,
+            });
+        }
+        Ok(Some(choices))
+    }
+
+    pub(crate) fn validate_complete_choices(
+        &self,
+        config: &GridConfig,
+        choices: &[Choice],
+        minimum_preferred_words: usize,
+    ) -> Option<bool> {
+        let mut preferred_count = 0;
+        for choice in choices {
+            if Instant::now() >= self.deadline {
+                return None;
+            }
+            let slot = &config.slot_configs[choice.slot_id];
+            if config.word_list.word_tier((slot.length, choice.word_id)) == WordTier::Preferred {
+                preferred_count += 1;
+            }
+        }
+        if preferred_count < minimum_preferred_words {
+            return Some(false);
+        }
+
+        for (index, choice) in choices.iter().enumerate() {
+            if Instant::now() >= self.deadline {
+                return None;
+            }
+            let slot = &config.slot_configs[choice.slot_id];
+            let dupes = config
+                .word_list
+                .dupe_index
+                .get_dupes_by_length((slot.length, choice.word_id));
+            for other_choice in &choices[index + 1..] {
+                if Instant::now() >= self.deadline {
+                    return None;
+                }
+                let other_slot = &config.slot_configs[other_choice.slot_id];
+                if dupes
+                    .get(&other_slot.length)
+                    .is_some_and(|word_ids| word_ids.contains(&other_choice.word_id))
+                {
+                    return Some(false);
+                }
+            }
+        }
+        Some(true)
+    }
 }
 
 /// Identify the next slot we should try to fill, based on a combination of the `dom/wdeg` priority
@@ -733,7 +1121,9 @@ fn find_fill_for_seed_with_options(
             &mut statistics.choice_arc_consistency_time,
             elimination_sets,
             options.minimum_preferred_words,
-        ) {
+            None,
+        ) == MaintainResult::Consistent
+        {
             // If we successfully propagated constraints for this choice, we can record it and
             // move on to the next slot.
             choices.push(choice);
@@ -759,7 +1149,9 @@ fn find_fill_for_seed_with_options(
                 &mut statistics.elimination_arc_consistency_time,
                 elimination_sets,
                 options.minimum_preferred_words,
-            ) {
+                None,
+            ) == MaintainResult::Consistent
+            {
                 // If we successfully propagated constraints for this elimination, we're done
                 // backtracking and can return to the top-level loop.
                 break;
@@ -780,8 +1172,11 @@ fn find_fill_for_seed_with_options(
             slots[undoing_choice.slot_id].clear_choice();
 
             for slot in &mut slots {
-                if slot.id != undoing_choice.slot_id && slot.fixed_word_id.is_none() {
-                    slot.clear_eliminations(config, undoing_choice.slot_id);
+                if slot.id != undoing_choice.slot_id
+                    && slot.fixed_word_id.is_none()
+                    && !slot.clear_eliminations(config, undoing_choice.slot_id, deadline)
+                {
+                    return Err(FillFailure::Timeout);
                 }
             }
 
@@ -795,6 +1190,24 @@ fn find_fill_for_seed_with_options(
             last_starting_word_idx = None;
         }
     }
+}
+
+fn initialize_fill_search(
+    config: &GridConfig,
+    elimination_sets: &mut [EliminationSet],
+    minimum_preferred_words: usize,
+) -> Result<(Vec<Slot>, Vec<f32>, Duration), FillFailure> {
+    let mut slots = build_slots(config, None).expect("slot construction cannot abort");
+    let mut crossing_weights = vec![1.0; config.crossing_count];
+    let initial_arc_consistency_time = establish_initial_search_state(
+        config,
+        &mut slots,
+        &mut crossing_weights,
+        elimination_sets,
+        minimum_preferred_words,
+        None,
+    )?;
+    Ok((slots, crossing_weights, initial_arc_consistency_time))
 }
 
 /// Search with the legacy defaults: no preferred-word minimum and no additional cancellation flag.
@@ -827,63 +1240,8 @@ pub fn find_fill_with_options(
         owned_elimination_sets.as_mut().unwrap()
     });
 
-    // Create basic Slot structs for the grid, which we can copy for each retry instead of having
-    // to regenerate from scratch.
-    let mut slots: Vec<Slot> = config
-        .slot_configs
-        .iter()
-        .map(|slot_config| {
-            let glyph_counts_by_cell = build_glyph_counts_by_cell(
-                config.word_list,
-                slot_config.length,
-                &config.slot_options[slot_config.id],
-            );
-
-            let is_fixed = slot_config
-                .complete_fill(config.fill, config.width)
-                .is_some();
-
-            Slot {
-                id: slot_config.id,
-                length: slot_config.length,
-                eliminations: vec![None; config.word_list.words[slot_config.length].len()],
-                remaining_option_count: config.slot_options[slot_config.id].len(),
-                fixed_word_id: if is_fixed {
-                    assert_eq!(config.slot_options[slot_config.id].len(), 1);
-                    Some(config.slot_options[slot_config.id][0])
-                } else {
-                    None
-                },
-                fixed_glyph_counts_by_cell: if is_fixed {
-                    Some(glyph_counts_by_cell.clone())
-                } else {
-                    None
-                },
-                glyph_counts_by_cell,
-            }
-        })
-        .collect();
-
-    // Start tracking weights representing how problematic each crossing is in the grid. These are
-    // shared between retries so that we can learn from each one.
-    let mut crossing_weights: Vec<f32> = (0..config.crossing_count).map(|_| 1.0).collect();
-
-    // Establish initial arc consistency (including dupe-checking). If we can't even do that, we're
-    // obviously not going to be able to find a fill.
-    let slot_weights = calculate_slot_weights(config, &slots, &crossing_weights);
-    let mut initial_arc_consistency_time = Duration::default();
-    if !maintain_arc_consistency(
-        config,
-        &mut slots,
-        &mut crossing_weights,
-        &slot_weights,
-        &ArcConsistencyMode::Initial,
-        &mut initial_arc_consistency_time,
-        elimination_sets,
-        options.minimum_preferred_words,
-    ) {
-        return Err(FillFailure::HardFailure);
-    }
+    let (slots, mut crossing_weights, initial_arc_consistency_time) =
+        initialize_fill_search(config, elimination_sets, options.minimum_preferred_words)?;
 
     // We cap the number of backtracks for each retry so that we don't get hung up for too long on a
     // bad starting point.

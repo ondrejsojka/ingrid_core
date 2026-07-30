@@ -16,6 +16,7 @@ pub mod grid_config;
 pub mod parallel_search;
 pub mod types;
 pub mod util;
+pub mod variant_estimate;
 pub mod word_list;
 
 /// The expected maximum length for a single slot.

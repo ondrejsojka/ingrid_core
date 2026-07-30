@@ -58,6 +58,21 @@ cancels workers at easier minima while harder workers continue, and the freed co
 across the remaining viable counts. The CLI returns the best fill found after 60 seconds by default;
 `--timeout 0` instead waits until the largest attainable preferred-word count is proven.
 
+`--estimate-variants` runs a bounded post-search estimator for the number of distinct valid fills
+containing at least as many Preferred entries as the returned fill. Each randomized root-to-leaf
+walk uses Ingrid's actual incremental arc consistency, duplicate/shared-substring rules, fixed
+entries, and Preferred threshold; accepted leaves are inverse-probability weighted. The default
+estimator budget is 45% of the completed search time. `--estimate-runtime-ratio` changes that
+fraction but is capped at 50%, and `--estimate-max-time` adds an absolute seconds cap.
+`--estimate-seed` makes each numbered walk reproducible. A short timed pilot selects a conservative,
+fixed sample count; pilot outcomes never enter the numerical estimate, and an interrupted fixed
+cohort is reported as insufficient evidence rather than averaged selectively. When independent
+walks have too little effective mass, the estimator spends the remaining budget on independent
+sequential Monte Carlo replicates with bounded particle and memory counts. The report includes a
+certified sampled lower bound, the arithmetic fill estimate expressed as both a count and slack
+bits, an interval, accepted walks or SMC replicates, effective sample size, and measured overhead.
+Zero accepted samples are reported as insufficient evidence, never as zero variants.
+
 `--blocklist` takes a file of words that may never appear in a fill, one per line, with `#`
 starting a comment. Matching is exact after the same normalization applied to the word lists, so
 `--ignore-diacritics` folds the blocklist too, and the words are hidden from the preferred and
@@ -90,6 +105,16 @@ Options:
           Number of CPU cores to use [default: all available cores]
       --timeout <TIMEOUT>
           Maximum search time in seconds; 0 waits for a proven optimum [default: 60]
+      --search-log <PATH>
+          Append scheduler convergence telemetry to this CSV path
+      --estimate-variants
+          Estimate how many distinct fills are at least as Preferred-heavy as the returned fill
+      --estimate-runtime-ratio <ESTIMATE_RUNTIME_RATIO>
+          Maximum estimator/search runtime ratio; values above 0.5 are capped [default: 0.45]
+      --estimate-max-time <ESTIMATE_MAX_TIME>
+          Absolute estimator time cap in seconds
+      --estimate-seed <ESTIMATE_SEED>
+          Random seed for variant-estimation walks [default: 0]
   -t, --time
           Print timing information along with the grid
   -h, --help
