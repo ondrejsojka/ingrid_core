@@ -132,9 +132,12 @@ $ python3 scripts/czech_standard_dict.py \
 
 By default, the Standard filter keeps analyzed noun, adjective, verb, and
 adverb forms, excludes entries whose only analyses are foreign/unknown, and
-retains noncanonical inflections. Use `--allowlist` and `--denylist` for
-reviewed exceptions; add `--drop-noncanonical` only for intentionally strict
-experiments.
+retains noncanonical inflections. Use `--exclude-vocatives`,
+`--exclude-imperatives`, and `--exclude-transgressives` to reject entries whose
+only eligible analyses belong to those marked classes.
+`--min-noncanonical-score` adds a frequency floor without removing low-frequency
+canonical lemmas. Use `--allowlist` and `--denylist` for reviewed exceptions;
+add `--drop-noncanonical` only for intentionally strict experiments.
 
 Build a high-precision Preferred list for readers of the full publication
 archive. The JSON analysis and lemma-frequency dictionary are reusable caches;

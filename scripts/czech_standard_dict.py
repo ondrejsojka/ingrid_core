@@ -2,8 +2,8 @@
 """Filter and score a Czech Standard dictionary with MorphoDiTa.
 
 Words are eligible when MorphoDiTa reports an allowed part-of-speech initial.
-Canonical forms receive a score bonus; with ``--drop-noncanonical``, inflected
-forms are removed instead. MorphoDiTa's guesser is disabled so invented
+Canonical forms receive a score bonus; noncanonical forms can be restricted by
+frequency or inflection class. MorphoDiTa's guesser is disabled so invented
 analyses do not affect the list. Explicit allowlist entries bypass morphology,
 while denylist entries always win.
 """
@@ -78,6 +78,18 @@ def parse_allowed_pos(value: str) -> frozenset[str]:
     return frozenset(initials)
 
 
+def is_vocative_tag(tag: str) -> bool:
+    return tag.startswith(("N", "A")) and len(tag) > 4 and tag[4] == "5"
+
+
+def is_excluded_inflection(tag: str, args: argparse.Namespace) -> bool:
+    return (
+        (args.exclude_vocatives and is_vocative_tag(tag))
+        or (args.exclude_imperatives and tag.startswith("Vi"))
+        or (args.exclude_transgressives and tag.startswith("Ve"))
+    )
+
+
 def write_report(path: Path, rows: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as destination:
@@ -94,6 +106,26 @@ def main() -> int:
     parser.add_argument("--min-score", type=int, default=30)
     parser.add_argument("--canonical-bonus", type=int, default=20)
     parser.add_argument("--drop-noncanonical", action="store_true")
+    parser.add_argument(
+        "--min-noncanonical-score",
+        type=int,
+        help="Minimum input score for retained noncanonical forms",
+    )
+    parser.add_argument(
+        "--exclude-vocatives",
+        action="store_true",
+        help="Exclude forms whose only eligible analyses are vocative",
+    )
+    parser.add_argument(
+        "--exclude-imperatives",
+        action="store_true",
+        help="Exclude forms whose only eligible analyses are imperative",
+    )
+    parser.add_argument(
+        "--exclude-transgressives",
+        action="store_true",
+        help="Exclude forms whose only eligible analyses are transgressive",
+    )
     parser.add_argument(
         "--allowed-pos",
         type=parse_allowed_pos,
@@ -134,6 +166,7 @@ def main() -> int:
         denied = word in denylist
         below_min_score = score < args.min_score
         pos_initials: set[str] = set()
+        eligible_tags: set[str] = set()
         canonical = False
 
         # Rejected words still need complete morphology columns in an audit.
@@ -144,6 +177,8 @@ def main() -> int:
                 if not analysis.tag:
                     continue
                 pos_initials.add(analysis.tag[0].upper())
+                if analysis.tag[0].upper() in args.allowed_pos:
+                    eligible_tags.add(analysis.tag)
                 if normalize_word(morphology.rawLemma(analysis.lemma)) == word:
                     canonical = True
 
@@ -159,6 +194,16 @@ def main() -> int:
                 morphology_rejection = "foreign_unknown"
             elif pos_initials.isdisjoint(args.allowed_pos):
                 morphology_rejection = "disallowed_pos"
+            elif eligible_tags and all(
+                is_excluded_inflection(tag, args) for tag in eligible_tags
+            ):
+                morphology_rejection = "excluded_inflection"
+            elif (
+                not canonical
+                and args.min_noncanonical_score is not None
+                and score < args.min_noncanonical_score
+            ):
+                morphology_rejection = "low_noncanonical_score"
             else:
                 morphology_rejection = None
 
