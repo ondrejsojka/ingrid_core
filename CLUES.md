@@ -1,8 +1,10 @@
 # Nápovědy ke křížovkám — pracovní dokument
 
-Status: návrh po první designové iteraci. Není to hotová specifikace ani prompt —
+Status: návrh po druhé designové iteraci. Není to hotová specifikace ani prompt —
 je to zápis toho, na čem jsme se shodli, co jsme zamítli a proč, aby se dalo
-navázat, aniž bychom znovu procházeli slepé uličky.
+navázat, aniž bychom znovu procházeli slepé uličky. Druhá iterace přidala § 5
+(tvar vs. úhel), § 9 (pásma a pravidla na mřížku), § 11 (jak to generovat),
+§ 12 (zákazy) a přílohy D–E s celou sadou legend na jednu skutečnou mřížku.
 
 Testovací půda: **Brněnský Metropolitan**, číslo červenec–srpen 2026.
 Metropolitan je MVP, ne cíl. Všechno, co je tu specifické pro radniční magazín,
@@ -38,7 +40,7 @@ legenda. Proto není rozpočet znaků v krabičce kosmetika, ale hlavní úzké 
 celého nápadu.
 
 Zároveň: dostat do mřížky víc topical slov je drahé a samo o sobě těžké. Nelze
-s tím počítat jako s hlavním řešením. Viz § 6, kde je z toho aspoň částečné
+s tím počítat jako s hlavním řešením. Viz § 7, kde je z toho aspoň částečné
 východisko.
 
 ---
@@ -117,13 +119,124 @@ Toto byl jeden z nejlepších posunů v celé debatě. Místo `UŠIMA (7. p.)` p
 tázací zájmeno dělá totéž, je kratší a je to hra, ne poznámka pod čarou.
 
 Praktický důsledek: **ohnutý tvar přestává být vadou slova.** To mění i skórování
-slovníku — viz § 7.
+slovníku — viz § 8.
 
 Zásoba: kdo / co / koho / čeho / komu / čemu / kým / čím / kde / kam / odkud / kolik.
 
 ---
 
-## 5. Komprese
+## 5. Tvar nese svěžest, úhel ji platí
+
+Tohle je nejdůležitější věc, na kterou jsme přišli po § 4, a mění to celý postup
+výroby.
+
+### Co český luštitel čeká
+
+Výchozí česká legenda je **nominální fráze**: hyperonym plus přívlastek.
+„Malířská pracovna" → ATELIÉR. „Básnický obrat" → TROP. Osmdesát takových za
+sebou je to, na co je luštitel zvyklý — a je to zvyk **syntaktický**, ne
+obsahový. Proto:
+
+> **Pocit svěžesti vzniká z porušení tvaru, ne z chytrosti obsahu.**
+
+To je dobrá zpráva, protože tvar je zdarma. Úhel (sémantická odchylka, pointa,
+dezorientace) se platí znaky, ověřováním a rizikem nefér legendy. Tvar se
+neplatí ničím — často je dokonce kratší než nominální varianta, kterou nahrazuje.
+
+### Katalog tvarů
+
+| tvar | příklad | cena znaků |
+|---|---|---|
+| **nominální** (výchozí) | básnický obrat → TROP | — |
+| **tázací** | čím objímáš? → PAŽEMI | 0 |
+| **rozkaz / 2. osoba** | kufry, honem! → BAL | 0 |
+| **asyndeton** (dvě položky) | v síti, v punčoše → OKA | −3 proti vztažné větě |
+| **dvojtečka** | šváb i Moskvan: koho? → RUSA | 0 |
+| **pomlčka** | ne aliance – hned potom → NATO | −2 proti „ale" |
+| **výpustka** | …ubývá → VALEM | −6 |
+| **holé číslo** | 44992785 → IČO | −10 |
+| **negace** | ne samo od sebe → ORGANIZOVÁNO | 0 |
+| **replika** | „…jednu rundu!" → EŠTĚ | 0, a nese navíc registr |
+
+Nejvíc nevyužitá je **výpustka**. Za jeden interpunkční znak udělá z ustálené
+vazby legendu: `…do vazby` → VZETÍ (9 znaků), `…zaplatíš` → DRAZE (10),
+`tápeš v …` → TMĚ (10). Je to zároveň nejšvédštější věc v celém katalogu, protože
+se to vejde do krabičky i s rezervou.
+
+### Replika: hovorové slovo se nedefinuje, dává se do pusy
+
+Tohle vylezlo z jedné vady. `eště` se nedá oklikat nominálně — každá věcná
+legenda musí říct „ještě", tedy kořen odpovědi, a to je § 12.1. Napsal jsem, že
+má vypadnout. Byl to špatný závěr: **výpustka plus mluvčí** to řeší úplně.
+
+```
+…jednu rundu!            EŠTĚ      (14)
+…jedno, a platím         EŠTĚ      (17)
+…ne, ale skoro           EŠTĚ      (15)
+```
+
+Rozdíl proti výpustce: výpustka vynechává slovo z **ustálené vazby**, replika ho
+vynechává z **věty, kterou někdo říká**. To druhé přidává zdarma to, co § 3 chce
+kupovat — registr, místo, tón. „…jednu rundu!" je hospoda, ne slovník.
+
+Platí to na celou třídu slov, kterou § 8 rehabilitoval a která se nominálně
+oklikat nedá:
+
+```
+ty …!                    TEDA
+…, poslouchej            HELE
+…, a co má být           JO
+jen …                    NAOKO
+vydat …                  VŠANC
+```
+
+Obecné pravidlo: **částice a hovorové varianty se cluují replikou, ne definicí.**
+Definice takového slova buď prosákne kořen, nebo zní jako poznámka jazykovědce.
+
+### Kotva první, pointa druhá
+
+Druhá věc z téhle iterace, a je to oprava mé chyby. `kyselá i protitanková`
+→ MINA nefunguje, přestože obojí je správné: „mina" jako výraz tváře je
+slovníkově v pořádku (z fr. *mine*, „udělal kyselou minu"), ale luštitel má
+v hlavě nejdřív **výbušninu**, a legenda mu jako první podá ten druhý význam.
+Výsledek je „cože?", ne „aha" — přesně to, co § 12.2 zakazuje.
+
+Oprava je jen pořadí: **`protitanková i kyselá`**. Známý význam kotví, neznámý
+dopadne jako pointa.
+
+> V asyndetonu, dvojtečce i pomlčce jde první ta část, kterou luštitel zná.
+> Obrácené pořadí není odvážnější, je jen nefér.
+
+Kdyby i tak vadil (redakce je první test), fallback je pásmo O bez dvojznačnosti:
+`leží tiše a čeká` → MINA.
+
+### Tři pásma, ne dvě
+
+Původní dělení „vtipná vs. nudná" bylo hrubé. Uprostřed leží pásmo, které je
+**svěží a přitom stejně snadné jako slovník** — a to je největší páka, kterou
+máme:
+
+| pásmo | co to je | příklad | obtížnost |
+|---|---|---|---|
+| **S — slovník** | hyperonym + přívlastek | básnický obrat → TROP | základní |
+| **O — obraz** | konkrétní věc místo hyperonyma | těsto pod utěrkou → KYNE · tři tóny naráz → AKORD · kniha jako harmonika → LEPORELO | **stejná jako S** |
+| **H — hra** | dezorientace, idiom, novotvar, pointa | koho si vezmeš? → ADVOKÁTA · vrtí psem → OCAS | vyšší |
+
+Pásmo O je zadarmo v obojím: v znacích i v obtížnosti. „Tři tóny naráz" není
+o nic těžší než „souzvuk tónů", je stejně dlouhé a luštitel u něj poprvé za
+osmdesát legend něco vidí. **Když se má někde zvýšit podíl svěžího, zvyšuje se
+O, ne H.** H je to, co se ověřuje a co může být nefér; O není ani jedno.
+
+### Nejvýš jedna odchylka na legendu
+
+Legenda si vezme buď netradiční tvar, nebo sémantický úhel. Obojí naráz je
+exhibice: vyjde delší, méně fér a pointa se v tom ztratí. `komu nic nevysvětlíš`
+má tázací tvar a nulový úhel; `vrtí psem` má nominální tvar a plný úhel. Obě
+fungují. Jejich hybrid by nefungoval.
+
+---
+
+## 6. Komprese
 
 Rodové slovo je skoro vždycky redundantní — pád, délka a křížení už řeknou,
 o jaký druh věci jde.
@@ -144,7 +257,7 @@ třemi a dvěma řádky v krabičce.
 
 ---
 
-## 6. Číslo z čísla
+## 7. Číslo z čísla
 
 Nejlepší rodina, protože je zároveň nejkratší, nejlokálnější a nejlevnější na
 výrobu.
@@ -178,7 +291,7 @@ Fill dostane číslo ve sloupci skóre, ne model ve smyčce.
 
 ---
 
-## 7. Háčky místo „cluability"
+## 8. Háčky místo „cluability"
 
 První návrh měl skalární cluability skóre a penalizoval nekanonické tvary
 a hovorové částice. **Byla to chyba a je systémová.**
@@ -207,7 +320,7 @@ Rehabilitováno oproti prvnímu návrhu: `fuč`, `vale`, `nána`, `všanc`, `nao
 
 ---
 
-## 8. Míra: polovina smí být nudná
+## 9. Míra: polovina smí být nudná
 
 Nemusí být každý den posvícení. Tohle není ústupek, je to konstrukční prvek:
 
@@ -219,22 +332,37 @@ Nemusí být každý den posvícení. Tohle není ústupek, je to konstrukční 
   ověřit třicet faktů, ne osmdesát. To je rozdíl mezi udržitelným procesem
   a jednorázovým kouskem.
 
-Cílová skladba na mřížku o ~78 heslech:
+### Cílová skladba pásem
 
-| typ | počet | poznámka |
+| pásmo | cíl | dosaženo na `no_marked_n33` (69 hesel) |
 |---|---|---|
-| NUM — rozšířená nápověda v marginálii | 6–10 | nestlačitelné fakty z čísla |
-| číslo z čísla / místní v boxu | ~12 | krátké, tvrdě lokální |
-| hlas — idiom, novotvar, dezorientace | ~15 | lokálnost tónem, ne faktem |
-| věcná definice | ~40 | lešení |
+| S — slovník | 45–50 % | 34 (49 %) |
+| O — obraz | 15–25 % | 12 (17 %) |
+| H — hra | 30–35 % | 23 (33 %) |
 
-Rozprostření je důležitější než poměr: luštitel by měl narazit na něco potměšilého
-zhruba každých pět hesel, ne mít půlku mřížky zábavnou a půlku mrtvou. Dvě sousední
-legendy nemají být ze stejné rodiny.
+Z toho 6–10 hesel v pásmu H nese fakt z čísla (NUM v marginálii nebo dvoubuňková
+legenda), zbytek H je hlas — lokálnost tónem, ne faktem.
+
+### Dvě pravidla, která platí na mřížku, ne na legendu
+
+Rozprostření je důležitější než poměr. Obojí se dá zkontrolovat strojově z grafu
+křížení, a obojí jsem si na `no_marked_n33` musel opravit — okem to není vidět.
+
+**1. Férové křížení.** Žádné heslo nesmí mít *všechna* svá křížení v pásmu H.
+Každé heslo potřebuje aspoň jeden snadný vstup zvenčí. (Na n33: 0 porušení.)
+
+**2. Rozptyl tvarů.** Heslo smí mít nejvýš **jedno** křížení se stejným
+netradičním tvarem. Svěžest se opakováním spotřebovává: třetí tázací legenda
+v jednom rohu už není hra, ale tik. První verze mé sady n33 měla **17 křížících
+se párů se stejným tvarem** (samé tázací) a nevšiml jsem si toho, dokud jsem to
+nespočítal. Po přepsání devíti legend: 0.
+
+Ani jedno z těch pravidel nelze splnit při generování legendy po jedné. Obojí
+je důvod pro architekturu v § 11.
 
 ---
 
-## 9. Co jsme zamítli a proč
+## 10. Co jsme zamítli a proč
 
 **Obrázková legenda (fotka v buňce).** Zamítnuto. Formát je moc malý na to, aby
 z fotky šlo něco poznat, a implikuje to hodně těžko automatizovatelné práce
@@ -259,7 +387,77 @@ předpočítaný sloupec ve slovníku.
 
 ---
 
-## 10. Otevřené otázky
+## 11. Generování: nejprve menu, potom přiřazení
+
+Legenda se **negeneruje po jedné**. Model, který dostane jedno heslo a vrátí
+jednu legendu, nemůže splnit § 9 — nevidí sousedy, nevidí poměr pásem, nevidí,
+že už použil čtyři tázací za sebou. Rozdělení práce:
+
+**Krok 1 — menu (lokální, paralelní, model).** Pro každé heslo: háčky (§ 8)
+určí, které tvary (§ 5) jsou přípustné, a model vyrobí 5–8 kandidátů. Každý
+kandidát nese tagy:
+
+```
+{answer, clue, shape, band, len, fact?: {value, page}}
+```
+
+Kandidát bez tagů se nepoužívá. O sousedech krok 1 nic neví a nemá vědět.
+
+**Krok 2 — přiřazení (globální, deterministické, bez modelu).** Nad grafem
+křížení se vybere jeden kandidát na heslo tak, aby se držely cíle pásem a platila
+obě pravidla z § 9. Hladový průchod od nejvíc omezených hesel stačí; je to malá
+úloha (~74 hesel, ~5 kandidátů). Když se změní fill, krok 2 se pustí znovu
+a model se nevolá.
+
+**Krok 3 — kontrolor (nutný, ne volitelný).** Osmdesát řádek kódu nad
+`(fill, sada legend)`, které spočítají:
+
+```
+medián a maximum délky            (cíl: medián ≤ 15, max ≤ 34)
+kořen odpovědi v legendě          (musí být 0)
+poměr pásem S/O/H                 (§ 9)
+heslo bez snadného křížení        (musí být 0)
+shodný tvar na křížení            (≤ 1 na heslo)
+fakt bez čísla stránky            (musí být 0)
+```
+
+Tenhle kontrolor je první věc, kterou má cenu napsat. Na mé ruční sadě našel
+17 kolizí tvarů a dva prosáklé kořeny (`vlevo` u LEVOBOKU, `ještě` u EŠTĚ),
+což je přesně to, co při psaní legenda po legendě nikdo neuvidí. Prosáklý kořen
+neznamená „heslo ven": znamená „změň tvar" — u EŠTĚ to vyřešila replika (§ 5).
+
+**Krok 4 — zpětná vazba do fillu.** Heslo, pro které neexistuje čestná legenda,
+není problém legendy, ale **vada fillu**. Jde do slovníku jako penalizace, ne do
+krabičky jako výmluva. Na `no_marked_n33` je to 5 hesel ze 74 (7 %): `kamp`,
+`kaleta`, `japan`, `šavelová` (neověřitelné vlastní jméno) a `velel` — to
+poslední je horší, protože se ve stejné mřížce potkává s `velet`. Shodný kořen
+dvakrát v jedné mřížce je tvrdá vada, kterou má hlídat dupe index, ne legendář.
+
+---
+
+## 12. Zakázané tahy
+
+Tvrdá pravidla. Porušení je vada, ne otázka vkusu.
+
+1. **Legenda neobsahuje kořen odpovědi.** Ani v jiném tvaru, ani v jiném pádu.
+   Kontroluje se strojově. Porušení znamená **změň tvar**, ne „heslo ven" —
+   replika a výpustka umí obejít i případy, kde nominální legenda prosáknout musí.
+2. **Pointu, kterou je třeba vysvětlit, zahoď.** Test: po odhalení odpovědi musí
+   legenda číst jako *evidentně správná*. „Aha", ne „cože". Když to potřebuje
+   výklad, je to hádanka, ne legenda. Nejčastější příčina není špatná pointa, ale
+   **špatné pořadí** — kotva musí jít první (§ 5).
+3. **Žádná legenda o křížovce.** Odkazy na mřížku, na počet písmen, na sousední
+   heslo. Švédská na to nemá místo a luštitel na to není zvyklý.
+4. **Neověřitelné vlastní jméno se neobchází vtipem.** Nevymýšlet fakt. Heslo
+   jde zpátky do fillu (§ 11, krok 4).
+5. **Fakt bez čísla stránky se nepoužije.** Provenience je součást legendy,
+   nikoli komentář k ní.
+6. **Nejvýš jedna odchylka na legendu** (§ 5) a **nejvýš jedno stejné tvarové
+   křížení** (§ 9).
+
+---
+
+## 13. Otevřené otázky
 
 1. **Reálný rozpočet znaků v BOX.** Cílíme na medián 14 při stropu 34, ale strop
    je odhad. Je-li reálný strop 24, vypadnou nejlepší dvoubuňkové legendy
@@ -365,10 +563,186 @@ co žere 96 km trubek?         KOROZI      212 000 ks             NÁKLAD
 ```
 local/metropolitan/txt/Metropolitan_2026-7-8_web.txt   text vydání (1 671 řádků)
 local/metropolitan/pdfs/                               archiv 2020–2026
-local/trials/fill_canonical_bias.txt                   nejčerstvější fill, 78 hesel
-local/trials/fill_flattened_corpus.txt                 alternativní fill
+local/trials/no_marked_n33_fill.txt                    nejčerstvější fill, 74 hesel
+local/trials/no_marked_n32_fill.txt                    předchozí fill
+local/trials/no_vocative_fill.txt                      fill bez vokativů
+local/trials/fill_canonical_bias.txt                   starší fill, 78 hesel
 local/trials/czech_15x15_score40_fill.txt              hustá mřížka, brněnské ulice
 local/trials/metro_context_*.dict, metro_theme_*.dict  tematické slovníky
 local/trials/metro_context_*.csv                       anotační pipeline (sem patří
                                                        has_number_fact a háčky)
 ```
+
+---
+
+## Příloha D — celá sada pro `no_marked_n33` (74 hesel)
+
+Kompletní sada, ne výběr — poměry a pravidla z § 9 mají smysl jen na celé mřížce.
+Medián délky **15 znaků**, maximum 23, nula prosáklých kořenů, nula hesel bez
+snadného křížení, nula tvarových kolizí na křížení. Bez čísla vydání v ruce jsou
+všechny legendy soběstačné; místa, kam patří fakt se stránkou, jsou v pásmu H.
+
+### S — věcné lešení (34)
+
+```
+folkový festival          PORTA         nominální
+co dostane prase?         KRMI          tázací
+nad nominál               ÁŽIO          nominální
+z horní sněmovny          LORD          nominální
+měna z Pretorie           RAND          nominální
+hudba na etapy            SUITA         nominální
+rozkazovat                VELET         nominální
+aniž si kdo všiml         NEPOZOROVANĚ  nominální
+nosník napříč             TRAVERZ       nominální
+odpuzující                REPELENTNÍ    nominální
+u Sázavy je jich plno     OSAD          nominální
+čeho se chopíš?           OTĚŽÍ         tázací
+bylina s toulcem          ÁRON          nominální
+co tlačíš?                KÁRU          tázací
+šest ve výtahu: čeho?     OSOB          dvojtečka
+nevolník                  OTROK         nominální
+více než dost             AŽAŽ          nominální
+čtvrt pinty               GILL          nominální
+vystihnout …              PODSTATU      výpustka
+měsíc ve verších          LUNA          nominální
+objetí: čím?              PAŽEMI        dvojtečka
+zaznělo                   OZVALO        nominální
+být slyšet                ZNÍT          nominální
+dělej, moravsky           ROB           rozkaz
+tápeš v …                 TMĚ           výpustka
+básnický obrat            TROP          nominální
+má směr i délku           VEKTOR        nominální
+spojka po „lepší"         NEŽ           nominální
+šlo dolů                  KLESLO        nominální
+přibývá                   ROSTE         nominální
+tlačenice s křikem        MELA          nominální
+pán v Kataru              EMÍR          nominální
+otvírat a zavírat oči     MRKAT         nominální
+fasáda je jich plná       OKEN          nominální
+```
+
+### O — obraz místo hyperonyma (12)
+
+```
+tři tóny naráz            AKORD         nominální
+s otevřenou pusou         UŽASLE        nominální
+zkouška prsty             OMAK          nominální
+co drží kravatu?          LÍMEC         tázací
+těsto pod utěrkou         KYNE          nominální
+co suší kabina?           DRESY         tázací
+kniha jako harmonika      LEPORELO      nominální
+v síti, v punčoše         OKA           asyndeton
+první metry šaliny        ROZJEZD       nominální
+štít, který hlodá         RAZÍCÍ        nominální
+hlas bez obsahu           ŘVANÍ         nominální
+klid z pohlednice         IDYLA         nominální
+```
+
+### H — hra (23)
+
+```
+kde v Brně kvákají?       ŽABOVŘESKY    tázací
+ze židle i do zbraně      POVSTAL       asyndeton
+co nemá růst              TUMOR         tázací
+ne samo od sebe           ORGANIZOVÁNO  negace
+…do vazby                 VZETÍ         výpustka
+maže se kolem huby        MED           výpustka
+komu nic nevysvětlíš      OSLU          tázací
+psí kosmonautka           LAJKA         novotvar
+ani bílo, ani černo       ŠEDO          negace
+kufry, honem!             BAL           rozkaz
+…ubývá                    VALEM         výpustka
+vlak nečekal              ODJELO        nominální
+…zaplatíš                 DRAZE         výpustka
+jak je v parku?           ZELENO        tázací
+nejste bez pojmu          VÍTE          negace
+šváb i Moskvan: koho?     RUSA          dvojtečka
+protitanková i kyselá     MINA          asyndeton
+co dělá slepá ulička?     NEVEDE        tázací
+koho si vezmeš?           ADVOKÁTA      tázací
+dnes na čem, zítra pod?   VOZE          tázací
+první adresa              EDEN          nominální
+ne aliance – hned potom   NATO          pomlčka
+kde je pán?               DOMĚ          tázací
+```
+
+### Vady fillu — bez legendy, zpátky do slovníku (5)
+
+```
+kamp        není české slovo; „kemp" ano, „kamp" ne
+kaleta      archaická peněženka / příjmení — neověřitelné
+japan       anglický úlomek
+šavelová    příjmení bez kotvy, nedohledatelné
+velel       shodný kořen s VELET ve stejné mřížce → vada dupe indexu
+```
+
+Hraniční, ale unesené: `gill` (cizí jednotka, ale „čtvrt pinty" je čestná
+legenda), `ažaž`, `áron`, `trop`, `rob` — všechno crosswordese, které projde
+jednou za mřížku, ne třikrát.
+
+---
+
+## Příloha E — výběr z `no_marked_n32` a `no_vocative`
+
+Ne celé sady — jen hesla, na kterých se dá kalibrovat tón. Pásmo v druhém sloupci.
+
+### `no_marked_n32`
+
+```
+z něj vyrostl dolar       TOLAR         H  (etymologie je nejlevnější pointa)
+jizva pro všechny         PUPEK         H
+mezi koněm a vozem        OJE           O
+kde má loď srdce?         LEVOBOKU      H
+čeho je v hádce nejmíň?   SEBEKONTROLY  H
+napětí po Italovi         VOLT          S
+kam teče ze střechy?      OKAP          O
+sliby v množném čísle     POLITIKOVÉ    H
+za oponou jich je plno    KULIS         S
+první, co se probudí      BIOS          O
+pokusný mazlík            MORČE         S
+co škrábe zjara           EKZÉMY        O
+mrkl tam                  JUKL          S
+…pálení slivovice         PĚSTITELSTVÍ  H
+čím to skončilo?          ZKÁZOU        S
+dovolená s vozem          AUTOKEMP      O
+bylina z Bible            YZOP          S
+marné výzvy               APELY         O
+přejít na křestní         TYKAT         H
+…jednu rundu!             EŠTĚ          H
+```
+
+`eště` bylo v první verzi odepsané jako vada — nominální legenda pro něj musí
+vyslovit „ještě", tedy kořen odpovědi (§ 12.1). Řeší to replika: `…jednu rundu!`
+(14 znaků, § 5). Zůstává v mřížce, a je to jedna z nejlepších legend v sadě.
+
+### `no_vocative`
+
+```
+vrtí psem                 OCAS          H  (nejlepší z celé trojice)
+z pánve i z tabule        SMAŽ          H
+sladce, ne 1609 m         MILE          H
+pták i ovoce              KIVI          H
+jihočeské, a svítí        TEMELÍNSKÉ    H
+zvedla ruce               KAPITULOVALA  H
+„kdo je tam?" s obrázkem  VIDEOTELEFON  H
+ruka pod hrazdou          DOPOMOC       O
+orgán, nebo sraz          SLEZINU       H
+hora s hvězdárnou: kde?   KLETI         S
+jak se prosí?             VKLEČE        H
+pod zemí i pod plachtou   KRYTY         H
+kostka o hraně 10 cm      LITR          S
+playlist po staru         MIXY          O
+kde blikají automaty      HERNY         S
+co dělá réva?             PNE           S
+obilí i šachy             POLE          H
+…po vědění                HLAD          H
+stroje na ráno            KÁVOVARY      O
+brněnská čtvrť            ŽIDENICE      S
+má je jako talíře         OKATÁ         O
+co už není nedělitelné    ATOM          H
+brát to jak?              CITEM         S
+přítok Volhy              KAMA          S
+```
+
+`ŽIDENICE` je schválně jen „brněnská čtvrť": tohle je přesně to místo, kam patří
+fakt se stránkou z čísla. Bez čísla v ruce by legenda musela lhát, a to je § 12.4.
