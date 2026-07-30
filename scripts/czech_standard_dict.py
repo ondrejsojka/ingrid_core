@@ -50,18 +50,14 @@ def load_scored_dict(path: Path) -> dict[str, int]:
 
 
 def load_wordlist(path: Path | None) -> set[str]:
+    """One word per line, lowercase NFC; `#` starts a comment."""
     if path is None:
         return set()
-
     words: set[str] = set()
-    with path.open(encoding="utf-8") as source:
-        for line in source:
-            raw = line.strip()
-            if not raw or raw.startswith("#"):
-                continue
-            word = normalize_word(raw)
-            if word and word.isalpha():
-                words.add(word)
+    for line in path.read_text(encoding="utf-8").splitlines():
+        word = line.split("#", 1)[0].strip().lower()
+        if word:
+            words.add(unicodedata.normalize("NFC", word))
     return words
 
 
@@ -174,12 +170,15 @@ def main() -> int:
             analyses.clear()
             morphology.analyze(word, Morpho.NO_GUESSER, analyses)
             for analysis in analyses:
+                lemma = normalize_word(morphology.rawLemma(analysis.lemma))
+                if lemma in denylist:
+                    denied = True
                 if not analysis.tag:
                     continue
                 pos_initials.add(analysis.tag[0].upper())
                 if analysis.tag[0].upper() in args.allowed_pos:
                     eligible_tags.add(analysis.tag)
-                if normalize_word(morphology.rawLemma(analysis.lemma)) == word:
+                if lemma == word:
                     canonical = True
 
         output_score: int | str = ""

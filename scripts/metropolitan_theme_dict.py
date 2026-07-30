@@ -109,6 +109,19 @@ def load_scored_dict(path: Path) -> dict[str, int]:
             words[word] = max(score, words.get(word, 0))
     return words
 
+
+def load_blocklist(path: Path | None) -> set[str]:
+    """One word per line, lowercase NFC; `#` starts a comment."""
+    if path is None:
+        return set()
+    words: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        word = line.split("#", 1)[0].strip().lower()
+        if word:
+            words.add(unicodedata.normalize("NFC", word))
+    return words
+
+
 def standard_lemma_provenance(
     standard_path: Path, model_path: Path
 ) -> dict[str, object]:
@@ -436,10 +449,13 @@ def choose_reason(
     salience: float | None,
     background_item: LemmaStats | None,
     background_documents: int,
+    denylist: set[str],
     curated: set[str],
     stopwords: set[str],
     args: argparse.Namespace,
 ) -> str:
+    if lemma in denylist:
+        return "denylist"
     if lemma in curated:
         return "curated"
     if len(lemma) < args.min_length:
@@ -571,6 +587,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--refresh-standard-lemmas", action="store_true")
     parser.add_argument("--curated", type=Path, help="Optional scored words always placed in Preferred")
+    parser.add_argument(
+        "--denylist",
+        type=Path,
+        help="UTF-8 words excluded from Preferred even when curated",
+    )
     parser.add_argument("--output", type=Path, required=True, help="Preferred Ingrid word;score dictionary")
     parser.add_argument("--report", type=Path, help="CSV report containing every analyzed lemma and decision")
     parser.add_argument("--analysis-cache", type=Path, help="Reusable contextual-analysis JSON cache")
@@ -652,7 +673,14 @@ def main() -> int:
         args.model,
         args.refresh_standard_lemmas,
     )
+    denylist = load_blocklist(args.denylist)
     curated_scores = load_scored_dict(args.curated) if args.curated else {}
+    blocked_curated = set(curated_scores) & denylist
+    curated_scores = {
+        lemma: score
+        for lemma, score in curated_scores.items()
+        if lemma not in denylist
+    }
     curated = set(curated_scores)
     stopwords = DEFAULT_STOPWORDS | {normalize_word(word) for word in args.stopword}
     selected: dict[str, int] = dict(curated_scores)
@@ -675,6 +703,7 @@ def main() -> int:
             salience,
             background_stats.get(lemma),
             background_documents,
+            denylist,
             curated,
             stopwords,
             args,
@@ -704,6 +733,26 @@ def main() -> int:
                 "verb_count": item.verb_count,
                 "standard_score": "" if standard_score is None else standard_score,
                 "salience": "" if salience is None else f"{salience:.3f}",
+            }
+        )
+    for lemma in sorted(blocked_curated - stats.keys()):
+        decisions["denylist"] += 1
+        report_rows.append(
+            {
+                "lemma": lemma,
+                "selected": False,
+                "reason": "denylist",
+                "output_score": "",
+                "count": 0,
+                "documents": 0,
+                "entity_count": 0,
+                "entity_documents": 0,
+                "background_documents": 0,
+                "noun_count": 0,
+                "adjective_count": 0,
+                "verb_count": 0,
+                "standard_score": standard.get(lemma, ""),
+                "salience": "",
             }
         )
     for lemma in sorted(curated - stats.keys()):

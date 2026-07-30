@@ -1,0 +1,114 @@
+# Czech crossword blocklist
+#
+# Entries that must never reach a grid, in either tier. One word per line,
+# lowercase, NFC, diacritics preserved. `#` starts a comment. Blank lines ignored.
+#
+# Applied in three places, all with the same file:
+#   scripts/czech_standard_dict.py   --denylist   (Standard tier, at build time)
+#   scripts/metropolitan_theme_dict.py --denylist (Preferred tier, at build time)
+#   scripts/apply_blocklist.py                    (already-built .dict of either tier)
+#
+# The Standard-tier builder also denies any word whose morphological lemma is
+# listed here, so `kamp` covers `kampu`, `kampem`, `kampy`.
+#
+# Rule of thumb for adding an entry: if no honest clue exists for it under
+# CLUES.md § 12, or the publication would refuse the word on register grounds,
+# it is a fill defect — and defects belong in the dictionary, not in the clue box.
+
+# ---------------------------------------------------------------------------
+# Not Czech words: foreign fragments, abbreviations, truncations.
+# Every one of these was observed in a generated fill.
+# ---------------------------------------------------------------------------
+ala
+ant
+avis
+avii
+bath
+ele
+japan
+kamp
+kite
+komp
+lemon
+leté
+pace
+polis
+salt
+sap
+sim
+stou
+str
+tab
+top
+
+# ---------------------------------------------------------------------------
+# Proper names with no anchor: surnames and bare first names that cannot be
+# clued without inventing a fact (CLUES.md § 12.4). Named Brno places and
+# institutions are the opposite case and stay in the Preferred tier.
+# ---------------------------------------------------------------------------
+aloise
+barbora
+billy
+dostálek
+eman
+irena
+ivana
+kadani
+kaleta
+ken
+ledec
+lulu
+obalilová
+oros
+pepina
+rone
+seman
+vach
+vilém
+šavelová
+
+# ---------------------------------------------------------------------------
+# Short oblique fragments. A tázací clue technically reaches these
+# (`čeho se bojí plech?` → RZI), but they are three-letter filler that buys
+# nothing, and a grid needing them is a grid with too many three-letter slots.
+# ---------------------------------------------------------------------------
+burz
+dorazu
+rzi
+váh
+
+# ---------------------------------------------------------------------------
+# Colloquial contractions that read as typos in print. Note that idiomatic
+# particles are NOT blocked: `eště`, `fuč`, `vale`, `všanc`, `naoko` are wanted,
+# and CLUES.md § 5 shows how to clue them with a replika.
+# ---------------------------------------------------------------------------
+malýho
+seš
+tatí
+
+# ---------------------------------------------------------------------------
+# Register: vulgarities and insults, refused by publication policy rather than by
+# any judgement about the words. All of these sit in the cstenten-derived Standard
+# tier at scores 53-66, well above the usual --min-score of 30-40, so without this
+# section they can and do reach a fill.
+# ---------------------------------------------------------------------------
+blbec
+chcát
+debil
+hajzl
+hovno
+idiot
+kaká
+kokot
+kretén
+kurva
+nasrat
+pitomec
+prdel
+píča
+srát
+svině
+vole
+zkurvený
+čurák
+čůrat

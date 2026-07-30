@@ -531,6 +531,30 @@ impl WordList {
             )
     }
 
+    /// Hide every loaded word whose normalized form appears in `blocked`, making it unavailable
+    /// for filling: `generate_slot_options` rejects hidden words exactly as it rejects words
+    /// below the minimum score. Returns the number of words newly hidden.
+    ///
+    /// This applies to every tier at once, which is the point — a word we refuse to clue is
+    /// refused whether it arrived from the preferred or the standard list. Entries in `blocked`
+    /// must already be normalized the same way as the sources they are filtering.
+    pub fn hide_words(&mut self, blocked: &HashSet<String>) -> usize {
+        let mut hidden_count = 0;
+
+        for normalized in blocked {
+            let Some(&word_id) = self.word_id_by_string.get(normalized) else {
+                continue;
+            };
+            let word = &mut self.words[normalized.chars().count()][word_id];
+            if !word.hidden {
+                word.hidden = true;
+                hidden_count += 1;
+            }
+        }
+
+        hidden_count
+    }
+
     /// Borrow an existing word using its global id.
     #[must_use]
     pub fn get_word(&self, global_word_id: GlobalWordId) -> &Word {

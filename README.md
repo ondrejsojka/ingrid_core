@@ -58,6 +58,12 @@ cancels workers at easier minima while harder workers continue, and the freed co
 across the remaining viable counts. The CLI returns the best fill found after 60 seconds by default;
 `--timeout 0` instead waits until the largest attainable preferred-word count is proven.
 
+`--blocklist` takes a file of words that may never appear in a fill, one per line, with `#`
+starting a comment. Matching is exact after the same normalization applied to the word lists, so
+`--ignore-diacritics` folds the blocklist too, and the words are hidden from the preferred and
+standard tiers alike — a blocked word cannot sneak back in through the preferred list. With
+`--time`, the number of hidden words is reported alongside the fill timings.
+
 ```
 $ ingrid_core --help
 Crossword-generating library and CLI tool
@@ -72,6 +78,8 @@ Options:
           Path to the standard-tier scored wordlist [default: embedded Spread the Wordlist]
       --preferred-wordlist <PREFERRED_WORDLIST>
           Path to a preferred-tier scored wordlist
+      --blocklist <BLOCKLIST>
+          Path to a blocklist of words to exclude from every tier, one per line; `#` starts a comment
       --min-score <MIN_SCORE>
           Minimum allowable word score [default: 50]
       --max-shared-substring <MAX_SHARED_SUBSTRING>
@@ -127,7 +135,8 @@ $ python3 scripts/czech_standard_dict.py \
     --model /path/to/czech-morfflex.tagger \
     --input local/cstenten.dict \
     --output local/cstenten-canonical-bias.dict \
-    --min-score 30 --canonical-bonus 20
+    --min-score 30 --canonical-bonus 20 \
+    --denylist resources/blocklist_cs.txt
 ```
 
 By default, the Standard filter keeps analyzed noun, adjective, verb, and
@@ -138,6 +147,20 @@ only eligible analyses belong to those marked classes.
 `--min-noncanonical-score` adds a frequency floor without removing low-frequency
 canonical lemmas. Use `--allowlist` and `--denylist` for reviewed exceptions;
 add `--drop-noncanonical` only for intentionally strict experiments.
+
+`resources/blocklist_cs.txt` is this project's curated blocklist. Pass it to the
+search with `--blocklist`, which is the enforcing path since it applies to
+whatever dictionaries are handed in. The builders accept the same file with
+`--denylist` so blocked entries never enter a generated dictionary, and
+`apply_blocklist.py` filters a dictionary that already exists:
+
+```
+$ python3 scripts/apply_blocklist.py \
+    --input local/metropolitan-preferred.dict \
+    --output local/metropolitan-preferred-filtered.dict \
+    --blocklist resources/blocklist_cs.txt \
+    --report local/metropolitan-preferred-blocklist.csv
+```
 
 Build a high-precision Preferred list for readers of the full publication
 archive. The JSON analysis and lemma-frequency dictionary are reusable caches;
@@ -150,7 +173,8 @@ $ python3 scripts/metropolitan_theme_dict.py local/metropolitan \
     --standard local/cstenten.dict \
     --output local/metropolitan-preferred.dict \
     --report local/metropolitan-preferred.csv \
-    --analysis-cache local/metropolitan-analysis.json
+    --analysis-cache local/metropolitan-analysis.json \
+    --denylist resources/blocklist_cs.txt
 ```
 
 For a crossword tied to one edition, use the edition preset and the archive
@@ -164,7 +188,8 @@ $ python3 scripts/metropolitan_theme_dict.py path/to/issue.pdf \
     --output local/issue-preferred.dict \
     --report local/issue-preferred.csv \
     --analysis-cache local/issue-analysis.json \
-    --background-analysis local/metropolitan-analysis.json
+    --background-analysis local/metropolitan-analysis.json \
+    --denylist resources/blocklist_cs.txt
 ```
 
 To locate the publication source and surrounding text for a candidate entry
@@ -188,9 +213,13 @@ incumbent improvements, failures, and cancellations to CSV.
 $ cargo run --release -- \
     --preferred-wordlist local/metropolitan-preferred.dict \
     --wordlist local/cstenten-canonical-bias.dict \
+    --blocklist resources/blocklist_cs.txt \
     --min-score 30 --max-shared-substring 5 \
     --timeout 900 --search-log local/search.csv grid.txt
 ```
+
+`--blocklist` here is the same mechanism described above; it covers the Preferred
+list as well, so a blocked word cannot return through the theme dictionary.
 
 For the edition-specific workflow, run the same search with
 `--preferred-wordlist local/issue-preferred.dict` instead.

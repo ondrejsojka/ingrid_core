@@ -103,6 +103,10 @@ struct Args {
     #[arg(long)]
     preferred_wordlist: Option<String>,
 
+    /// Path to a blocklist of words to exclude from every tier, one per line; `#` starts a comment
+    #[arg(long)]
+    blocklist: Option<String>,
+
     /// Minimum allowable word score
     #[arg(long, default_value_t = 50)]
     min_score: u16,
@@ -197,6 +201,7 @@ fn main() -> Result<(), Error> {
 
     let start = Instant::now();
 
+    let blocklist_normalization = normalization.clone();
     let has_preferred_wordlist = args.preferred_wordlist.is_some();
     let mut source_configs = Vec::with_capacity(2);
     if let Some(preferred_wordlist_path) = args.preferred_wordlist {
@@ -254,6 +259,26 @@ fn main() -> Result<(), Error> {
         return Err(Error("Word list is empty".into()));
     }
 
+    let blocked_word_count = match args.blocklist.as_deref() {
+        Some(blocklist_path) => {
+            let contents = fs::read_to_string(blocklist_path)
+                .map_err(|_| Error(format!("Couldn't read file '{blocklist_path}'")))?;
+            let blocked: HashSet<String> = contents
+                .lines()
+                .filter_map(|line| {
+                    let word = line.split('#').next().unwrap_or("").trim();
+                    (!word.is_empty()).then(|| normalize_word(word, &blocklist_normalization))
+                })
+                .filter(|word| !word.is_empty())
+                .collect();
+            if blocked.is_empty() {
+                return Err(Error(format!("Blocklist '{blocklist_path}' has no words")));
+            }
+            Some(word_list.hide_words(&blocked))
+        }
+        None => None,
+    };
+
     let grid_config =
         generate_grid_config_from_template_string(word_list, &raw_grid_content, args.min_score);
 
@@ -299,8 +324,11 @@ fn main() -> Result<(), Error> {
     if args.time {
         let discovered_preferred_word_count =
             result.preferred_word_count - result.fixed_preferred_word_count;
+        let blocked = blocked_word_count
+            .map(|count| format!("; blocked words: {count}"))
+            .unwrap_or_default();
         eprintln!(
-            "{word_list_time:?} loading word lists, {fill_time:?} finding fill; preferred words: {} total, {} fixed, {discovered_preferred_word_count} discovered",
+            "{word_list_time:?} loading word lists, {fill_time:?} finding fill; preferred words: {} total, {} fixed, {discovered_preferred_word_count} discovered{blocked}",
             result.preferred_word_count, result.fixed_preferred_word_count
         );
     }
