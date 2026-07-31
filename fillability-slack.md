@@ -288,3 +288,131 @@ The estimator can be improved without changing the definition of exact slack:
 The invariant should remain simple: fillability slack is an approximation to
 `log2(number of valid fills)`, and every reported bit represents a factor of two
 in estimated structural freedom.
+
+## Review notes, 2026-07-30
+
+### What the independence estimator mismeasures
+
+- The sum hides the bottleneck. Failure is local (an exhausted short-slot
+  corner, a Hall-deficient region); slack is global. Nothing in `S_hat_0` warns
+  of an imminent AC collapse: the value degrades smoothly up to the phase edge,
+  then jumps to `-infinity`. The intended use — tightening list policies until
+  they bind — operates in exactly the regime where independence estimates fail
+  hardest.
+- The Preferred overlay is optimistic in the direction of use. Conditioning on
+  validity enriches fills in high-compatibility words, so
+  `Pr(slot is Preferred | valid) < q_s` systematically, and the error compounds
+  in the tail of `G(z)` — i.e., at the `k` actually being targeted. Both
+  calibration points on record agree: row 2 estimated +32.3 bits at `k=3` and
+  produced 2 Preferred; a `k=4` target with positive estimated slack filled
+  nothing in four hours.
+- The estimator does not approximate the stated `Z_k`. It counts solutions of a
+  relaxation: duplicate, shared-substring, and morphological-family
+  constraints are in the definition of `Z` but not in the estimate. In Czech
+  these are first-order: the short-word pool is shared across many slots and
+  inflectional endings collide on 4–6 grams, so the substring rule binds
+  constantly.
+- Count is not usable freedom. `log2 Z` is inflated by morphological
+  near-duplicate fills and by variance concentrated in throwaway regions; it
+  cannot distinguish one skeleton with corner swaps from genuinely different
+  fills. It also cannot see *position*: production needs Preferred entries in
+  the numbered cells and wide-adjacent slots, not `>= k` anywhere.
+- Zero is the wrong anchor for a quality-selection pipeline. The operative
+  budget is the count of fills above the editorial bar — strictly below
+  `S_hat_0` by the whole selection margin.
+- The claim "describes the problem itself" is not exact: domains are defined
+  after AC, so upgrading the propagator changes the reported slack with zero
+  change to the problem.
+
+### Per-knob biases for dictionary-policy tuning
+
+The intended dials are unary list filters (csTenTen frequency floor, flexion
+filter, Preferred-list trim) on one grid — the metric's best case, and the
+ordering within one knob is trustworthy. The knobs are not commensurable:
+
+- frequency floor: roughly honest; smooth degradation that hides the final
+  discontinuity;
+- flexion filter: measured cost is *overstated* — pre-filter slack counted
+  morphological variants the substring rule already forbade (fake freedom);
+  safe direction, but non-linear when an ending class is wiped;
+- Preferred trim: measured risk is *understated* at the target `k` — an
+  issue-themed list is letter-clustered, and Poisson-binomial co-occurrence
+  prices the tail too cheaply.
+
+Consequences: never compose per-knob deltas from the ledger — measure policy
+combinations jointly; treat anything past the calibrated comfort zone as
+unschedulable regardless of what the sum says; quote whole bits, not decimals.
+And the metric prices only the fill-survival half of each knob. The editorial
+cost (e.g., a flexion filter killing TVAR-hook words like `usima`) must come
+from the hook/number-fact columns, not from counting — see below, leaf
+predicates.
+
+### Compute ladder for better estimates
+
+More compute at evaluation time buys strictly better approximations to
+`log2 Z`:
+
+1. **Belief propagation / Bethe.** One factor per slot, values = words,
+   letter-equality factors at crossings; messages are letter-bucketized
+   (`O(|D| + alphabet)` per crossing per iteration). Captures intra-word letter
+   correlation exactly; loop error remains. Use BP marginals (validity-
+   conditioned) in place of raw `q_s`, and tilt by `e^{lambda}` per Preferred
+   value to recover the whole `k`-frontier by saddlepoint inversion. Per-word
+   marginal mass is a fill-value signal worth feeding back into wordlist
+   curation. Deterministic and cheap, but biased on loopy graphs — validate
+   against the next rung before trusting it across policies.
+2. **Knuth/SMC randomized backwalk.** Sample a root-to-leaf path in the
+   solver's own backtrack tree (uniform over surviving values, full propagation
+   maintained), multiply by branching factors, validate every constraint at the
+   leaf. Unbiased for the count of leaves passing *any* leaf predicate — the
+   full constraint set, the `>= k` Preferred rule, positioned theme entries
+   (fix NUM/WIDE slots first), and dictionary-column clue-quality predicates
+   (`>= 30` hooked entries, `>= 6` number-fact entries): since clue quality is
+   implemented as dictionary columns, the walk prices fill-side and clue-side
+   quality in one number. Strategy-invariant: MAC, dom/wdeg, and restarts
+   reduce variance for free, at zero bias cost. Common random numbers across
+   policies make `log2 Z(A) - log2 Z(B)` much tighter than either level. Not
+   sample-optimal: near the fill boundary the weight distribution goes
+   heavy-tailed and the (honest, empirical) confidence interval widens;
+   SMC resampling mitigates. Certified counts with error guarantees are the
+   domain of hashing-based counters.
+3. **#SAT export as a one-time calibration anchor.** Word-variable one-hot
+   encoding with per-crossing clauses; crossing-only count first (D4/GANAK
+   exact, or ApproxMC for an `(epsilon, delta)` guarantee), then estimate the
+   dupe/substring survival fraction by sampling fills and filtering. Pins the
+   absolute scale for a shape family and tells you how optimistic rung 1 is.
+
+### Compatibility with the Ingrid implementation (verified against source)
+
+- Search core is MAC over AC-3 with dom/wdeg slot choice, randomized restarts,
+  seedable `SmallRng` (backtracking_search.rs). Propagation revises via
+  aggregate cell x glyph counts, i.e., already letter-bucketized (util.rs).
+  Per-slot domains are materialized and public (`GridConfig::slot_options`),
+  and the incremental AC entry point `establish_arc_consistency` is public, so
+  a walk driver can be built against the public API: no complexity-class shift,
+  no surgery into search.
+- Caveat: dupe elimination in propagation only fires on singleton slots, so
+  mid-walk assignments can be dupe-violating — walks must validate dupes at the
+  leaf. Preferred minimum is a post-AC hard check, which fits the leaf-
+  predicate model directly.
+- The parallel scheduler is already a target-minimum ladder with success-
+  cancels-easier and failure-cancels-harder (parallel_search.rs) — the
+  mechanism the "place workers at steepest slack loss" idea wanted; the slack
+  curve is not needed for it. `SearchEvent` telemetry (elapsed, backtracks,
+  retries, discovered preferred) already provides the slack-vs-success
+  calibration corpus, including time-to-first-fill from first-success elapsed.
+- For a `#SAT` export, domains and crossings enumerate via public config; the
+  concrete dupe groups sit behind `Box<dyn AnyDupeIndex>` and need an
+  accessor; morphology data does not exist in core (external MorphoDiTa only),
+  so the export initially counts the same relaxation as the analytic metric.
+
+### Roles
+
+- BP: daily pre-search screen for "did this policy shift the structure",
+  plus per-word fill-value diagnostics for curation.
+- Walk: offline arbiter for "how many real fills did this dial-notch cost",
+  including clue-quality leaf predicates and positioned theme counts; failure
+  histograms from dead walks localize fragile regions.
+- #SAT counter: one-time certified anchor per shape family.
+- The analytic `S_hat` remains a within-grid, nested-list, monotone-ordering
+  screen — its honest use case — and nothing more.
