@@ -1,6 +1,9 @@
 //! Adaptive multi-core search for fills that maximize preferred-tier words.
 
-use crate::backtracking_search::{find_fill_with_options, FillFailure, FillOptions, FillSuccess};
+use crate::backtracking_search::{
+    compute_baseline_slots, find_fill_with_options, FillFailure, FillOptions, FillSuccess,
+    ADAPTIVE_BRANCHING_THRESHOLD,
+};
 use crate::grid_config::{Choice, GridConfig};
 use crate::word_list::WordTier;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -199,6 +202,19 @@ fn initial_targets(maximum: usize, worker_count: usize) -> VecDeque<usize> {
         .collect()
 }
 
+/// Spread the adaptive-branching threshold across workers so each explores a different slot-order
+/// tradeoff, from stickier (lower) to switchier (higher) than the default. Deterministically
+/// indexed by worker id so repeated runs with the same worker count are reproducible.
+fn adaptive_branching_threshold_for_worker(worker_id: u64, worker_count: usize) -> f32 {
+    if worker_count <= 1 {
+        return ADAPTIVE_BRANCHING_THRESHOLD;
+    }
+
+    let denominator = (worker_count - 1) as f32;
+    let fraction = (worker_id % (worker_count as u64)) as f32 / denominator;
+    ADAPTIVE_BRANCHING_THRESHOLD * (2.0 / 3.0) * (1.0 + fraction)
+}
+
 fn viable_bounds(
     best: Option<&PreferredFillSuccess>,
     impossible_from: usize,
@@ -304,6 +320,41 @@ fn find_best_fill_internal(
     let search_start = Instant::now();
     let deadline = timeout.map(|duration| search_start + duration);
 
+    // Run initial arc consistency once for all workers. The result is identical for every worker
+    // because AC-3 converges to a fixpoint that depends only on the grid and word list; each worker
+    // then applies its preferred-word minimum read-only on top of this shared start. If even the
+    // un-gated grid is inconsistent, no fill exists for any target: preserve the observer contract
+    // (HardFailure then FinalReturn) and bail before spawning any worker.
+    let Some(baseline_slots) = compute_baseline_slots(config) else {
+        emit_search_event(
+            &mut observer,
+            search_start,
+            SearchEventKind::HardFailure,
+            0,
+            None,
+            0,
+            fixed_preferred_word_count,
+            EventDetails {
+                result: Some(SearchEventResult::HardFailure),
+                ..EventDetails::default()
+            },
+        );
+        emit_search_event(
+            &mut observer,
+            search_start,
+            SearchEventKind::FinalReturn,
+            0,
+            None,
+            0,
+            fixed_preferred_word_count,
+            EventDetails {
+                result: Some(SearchEventResult::HardFailure),
+                ..EventDetails::default()
+            },
+        );
+        return Err(FillFailure::HardFailure);
+    };
+    let baseline_slots = baseline_slots.as_slice();
     let (result, final_incumbent, final_impossible_from, final_active_worker_count) =
         thread::scope(|scope| {
             let (sender, receiver) = mpsc::channel::<WorkerResult>();
@@ -415,6 +466,9 @@ fn find_best_fill_internal(
                                 minimum_preferred_words: target,
                                 abort: Some(abort.as_ref()),
                                 rng_seed_offset: id.wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                                adaptive_branching_threshold:
+                                    adaptive_branching_threshold_for_worker(id, worker_count),
+                                baseline_slots: Some(&baseline_slots),
                             },
                         );
                         let _ = sender.send(WorkerResult {
@@ -712,10 +766,13 @@ fn find_best_fill_internal(
 #[cfg(test)]
 mod tests {
     use super::{
-        find_best_fill, find_best_fill_with_observer, initial_targets, SearchEventKind,
-        SearchEventResult,
+        adaptive_branching_threshold_for_worker, count_preferred_words, find_best_fill,
+        find_best_fill_with_observer, initial_targets, SearchEventKind, SearchEventResult,
     };
-    use crate::backtracking_search::{find_fill_with_options, FillFailure, FillOptions};
+    use crate::backtracking_search::{
+        compute_baseline_slots, find_fill_with_options, FillFailure, FillOptions,
+        ADAPTIVE_BRANCHING_THRESHOLD,
+    };
     use crate::grid_config::generate_grid_config_from_template_string;
     use crate::word_list::{WordList, WordListSourceConfig, WordListSourceConfigProvider};
     use std::collections::HashSet;
@@ -756,6 +813,33 @@ mod tests {
             initial_targets(1_000, 1).into_iter().collect::<Vec<_>>(),
             vec![0]
         );
+    }
+
+    #[test]
+    fn spreads_adaptive_branching_threshold_across_workers() {
+        // Single worker keeps the default; multiple workers span ±33% around it.
+        assert_eq!(
+            adaptive_branching_threshold_for_worker(0, 1),
+            ADAPTIVE_BRANCHING_THRESHOLD
+        );
+        assert_eq!(
+            adaptive_branching_threshold_for_worker(9, 1),
+            ADAPTIVE_BRANCHING_THRESHOLD
+        );
+
+        let t = ADAPTIVE_BRANCHING_THRESHOLD;
+        let w = 4;
+        let expected_threshold = |id: u64| {
+            let fraction = (id % (w as u64)) as f32 / ((w - 1) as f32);
+            t * (2.0 / 3.0) * (1.0 + fraction)
+        };
+        let got: Vec<f32> = (0..w as u64)
+            .map(|id| adaptive_branching_threshold_for_worker(id, w))
+            .collect();
+        let want: Vec<f32> = (0..w as u64).map(expected_threshold).collect();
+        assert_eq!(got, want);
+        assert_eq!(got[0], t * (2.0 / 3.0));
+        assert_eq!(got[w - 1], t * (4.0 / 3.0));
     }
 
     #[test]
@@ -837,6 +921,9 @@ mod tests {
 
     #[test]
     fn observer_reports_hard_failure_before_final_return() {
+        // The template's center cell is isolated by blocks, so no fill exists at all.
+        // Initial arc consistency (now run once, up front, before any worker spawns) detects this
+        // immediately — so no WorkerStart fires, only the HardFailure → FinalReturn contract.
         let config =
             generate_grid_config_from_template_string(tiered_word_list(), "...\n.#.\n...\n", 0);
         let mut events = Vec::new();
@@ -848,19 +935,8 @@ mod tests {
         assert!(matches!(result, Err(FillFailure::HardFailure)));
         assert_eq!(
             events.iter().map(|event| event.kind).collect::<Vec<_>>(),
-            vec![
-                SearchEventKind::WorkerStart,
-                SearchEventKind::HardFailure,
-                SearchEventKind::FinalReturn,
-            ]
+            vec![SearchEventKind::HardFailure, SearchEventKind::FinalReturn]
         );
-        assert_eq!(events[1].worker_id, Some(0));
-        assert_eq!(events[1].target, Some(0));
-        assert_eq!(events[1].active_worker_count, 0);
-        assert_eq!(events[1].impossible_from, 0);
-        assert_eq!(events[1].states, None);
-        assert_eq!(events[1].result, Some(SearchEventResult::HardFailure));
-        assert_eq!(events[2].result, Some(SearchEventResult::HardFailure));
     }
 
     #[test]
@@ -922,5 +998,62 @@ mod tests {
         assert_eq!(returned.incumbent_preferred_word_count, Some(1));
         assert_eq!(returned.fixed_preferred_word_count, 1);
         assert_eq!(returned.discovered_preferred_word_count, Some(0));
+    }
+
+    #[test]
+    fn baseline_fed_fill_matches_legacy_path() {
+        // A fill driven off a precomputed baseline must land on the same optimum as the legacy
+        // inline-AC path, since the baseline is that exact same post-AC state computed once.
+        let config = tiered_single_slot_config();
+        let baseline = compute_baseline_slots(&config.to_config_ref())
+            .expect("baseline should be computable for a valid grid");
+
+        let legacy = find_fill_with_options(
+            &config.to_config_ref(),
+            None,
+            None,
+            FillOptions {
+                minimum_preferred_words: 1,
+                ..FillOptions::default()
+            },
+        );
+        let from_baseline = find_fill_with_options(
+            &config.to_config_ref(),
+            None,
+            None,
+            FillOptions {
+                minimum_preferred_words: 1,
+                baseline_slots: Some(&baseline),
+                ..FillOptions::default()
+            },
+        );
+
+        assert!(legacy.is_ok());
+        assert!(from_baseline.is_ok());
+        assert_eq!(
+            count_preferred_words(&config.to_config_ref(), &legacy.unwrap().choices),
+            count_preferred_words(&config.to_config_ref(), &from_baseline.unwrap().choices),
+        );
+    }
+
+    #[test]
+    fn baseline_path_still_enforces_preferred_minimum() {
+        // The baseline is computed without a preferred minimum; the per-worker gate must still
+        // reject a target the shared baseline cannot satisfy (isolated-center grid, word list has
+        // only one preferred word of the needed length).
+        let config = tiered_single_slot_config();
+        let baseline = compute_baseline_slots(&config.to_config_ref()).unwrap();
+
+        let result = find_fill_with_options(
+            &config.to_config_ref(),
+            None,
+            None,
+            FillOptions {
+                minimum_preferred_words: 2,
+                baseline_slots: Some(&baseline),
+                ..FillOptions::default()
+            },
+        );
+        assert!(matches!(result, Err(FillFailure::HardFailure)));
     }
 }

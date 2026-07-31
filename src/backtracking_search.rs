@@ -261,7 +261,7 @@ enum ArcConsistencyMode {
     Elimination(Choice, Option<SlotId>),
 }
 
-fn can_satisfy_minimum_preferred_words(
+pub fn can_satisfy_minimum_preferred_words(
     config: &GridConfig,
     slots: &[Slot],
     minimum_preferred_words: usize,
@@ -287,6 +287,75 @@ fn can_satisfy_minimum_preferred_words(
         .take(minimum_preferred_words)
         .count()
         == minimum_preferred_words
+}
+
+/// Build the scratch slots that seed every fill attempt for the given grid, capturing the grid's
+/// initial state before arc consistency prunes any domains.
+fn build_scratch_slots(config: &GridConfig) -> Vec<Slot> {
+    config
+        .slot_configs
+        .iter()
+        .map(|slot_config| {
+            let glyph_counts_by_cell = build_glyph_counts_by_cell(
+                config.word_list,
+                slot_config.length,
+                &config.slot_options[slot_config.id],
+            );
+
+            let is_fixed = slot_config
+                .complete_fill(config.fill, config.width)
+                .is_some();
+
+            Slot {
+                id: slot_config.id,
+                length: slot_config.length,
+                eliminations: vec![None; config.word_list.words[slot_config.length].len()],
+                remaining_option_count: config.slot_options[slot_config.id].len(),
+                fixed_word_id: if is_fixed {
+                    assert_eq!(config.slot_options[slot_config.id].len(), 1);
+                    Some(config.slot_options[slot_config.id][0])
+                } else {
+                    None
+                },
+                fixed_glyph_counts_by_cell: if is_fixed {
+                    Some(glyph_counts_by_cell.clone())
+                } else {
+                    None
+                },
+                glyph_counts_by_cell,
+            }
+        })
+        .collect()
+}
+
+/// Run initial arc consistency once and return the resulting baseline slots shared by every fill
+/// attempt. The propagation is target-agnostic because AC-3 converges to a fixpoint that depends
+/// only on the grid and word list; `minimum_preferred_words == 0` disables the per-worker
+/// cardinality gate so the baseline is identical for all workers, who then apply their own gate
+/// read-only via [`can_satisfy_minimum_preferred_words`].
+///
+/// Returns `None` if even the un-gated grid cannot be made arc-consistent.
+pub fn compute_baseline_slots(config: &GridConfig) -> Option<Vec<Slot>> {
+    let mut slots = build_scratch_slots(config);
+    let mut crossing_weights: Vec<f32> = vec![1.0; config.crossing_count];
+    let slot_weights = calculate_slot_weights(config, &slots, &crossing_weights);
+    let mut elimination_sets = EliminationSet::build_all(config.slot_configs, config.word_list);
+    let mut initial_arc_consistency_time = Duration::default();
+
+    if !maintain_arc_consistency(
+        config,
+        &mut slots,
+        &mut crossing_weights,
+        &slot_weights,
+        &ArcConsistencyMode::Initial,
+        &mut initial_arc_consistency_time,
+        &mut elimination_sets,
+        0,
+    ) {
+        return None;
+    }
+
+    Some(slots)
 }
 
 /// Within the context of a fill attempt, either establish initial arc consistency, propagate the
@@ -500,6 +569,7 @@ fn choose_next_slot(
     slots: &[Slot],
     slot_weights: &[f32],
     last_slot_id: Option<SlotId>,
+    adaptive_branching_threshold: f32,
     rng: &mut SmallRng,
     dist: &WeightedIndex<u8>,
     statistics: &mut Statistics,
@@ -538,7 +608,7 @@ fn choose_next_slot(
     // If the best slot isn't that much better than the one we're on, stay with the one we're on.
     if let Some(best_slot_priority) = best_slot_priority {
         if let (Some(last_slot_id), Some(last_slot_priority)) = (last_slot_id, last_slot_priority) {
-            if (last_slot_priority - best_slot_priority) < ADAPTIVE_BRANCHING_THRESHOLD {
+            if (last_slot_priority - best_slot_priority) < adaptive_branching_threshold {
                 statistics.restricted_branchings += 1;
                 return Some(last_slot_id);
             }
@@ -566,7 +636,7 @@ pub enum FillFailure {
 }
 
 /// Per-attempt constraints and controls that do not change the static grid configuration.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct FillOptions<'a> {
     /// Minimum number of slots whose chosen word must come from a preferred source.
     pub minimum_preferred_words: usize,
@@ -574,6 +644,25 @@ pub struct FillOptions<'a> {
     pub abort: Option<&'a std::sync::atomic::AtomicBool>,
     /// Offset added to retry RNG seeds so concurrent workers explore different paths.
     pub rng_seed_offset: u64,
+    /// How much better the best slot must be than the current one before we switch to it; see
+    /// `ADAPTIVE_BRANCHING_THRESHOLD`. Parallel workers vary this to diversify search order.
+    pub adaptive_branching_threshold: f32,
+    /// Slots already brought to initial arc consistency, shared across parallel workers to skip
+    /// re-deriving the identical start. `None` = build and run initial AC inline (legacy path). See
+    /// [`compute_baseline_slots`].
+    pub baseline_slots: Option<&'a [Slot]>,
+}
+
+impl Default for FillOptions<'_> {
+    fn default() -> Self {
+        FillOptions {
+            minimum_preferred_words: 0,
+            abort: None,
+            rng_seed_offset: 0,
+            adaptive_branching_threshold: ADAPTIVE_BRANCHING_THRESHOLD,
+            baseline_slots: None,
+        }
+    }
 }
 
 /// Search for a valid fill for the given grid, bailing out if we reach the deadline or the
@@ -666,6 +755,7 @@ fn find_fill_for_seed_with_options(
             &slots,
             &slot_weights,
             last_slot_id,
+            options.adaptive_branching_threshold,
             &mut rng,
             &slot_dist,
             &mut statistics,
@@ -827,62 +917,40 @@ pub fn find_fill_with_options(
         owned_elimination_sets.as_mut().unwrap()
     });
 
-    // Create basic Slot structs for the grid, which we can copy for each retry instead of having
-    // to regenerate from scratch.
-    let mut slots: Vec<Slot> = config
-        .slot_configs
-        .iter()
-        .map(|slot_config| {
-            let glyph_counts_by_cell = build_glyph_counts_by_cell(
-                config.word_list,
-                slot_config.length,
-                &config.slot_options[slot_config.id],
-            );
+    // Track weights representing how problematic each crossing is in the grid. Shared between
+    // retries so that we can learn from each one. The initial pass leaves these untouched, so a
+    // baseline path can seed them fresh and stay consistent with the legacy path.
+    let mut crossing_weights: Vec<f32> = vec![1.0; config.crossing_count];
 
-            let is_fixed = slot_config
-                .complete_fill(config.fill, config.width)
-                .is_some();
-
-            Slot {
-                id: slot_config.id,
-                length: slot_config.length,
-                eliminations: vec![None; config.word_list.words[slot_config.length].len()],
-                remaining_option_count: config.slot_options[slot_config.id].len(),
-                fixed_word_id: if is_fixed {
-                    assert_eq!(config.slot_options[slot_config.id].len(), 1);
-                    Some(config.slot_options[slot_config.id][0])
-                } else {
-                    None
-                },
-                fixed_glyph_counts_by_cell: if is_fixed {
-                    Some(glyph_counts_by_cell.clone())
-                } else {
-                    None
-                },
-                glyph_counts_by_cell,
-            }
-        })
-        .collect();
-
-    // Start tracking weights representing how problematic each crossing is in the grid. These are
-    // shared between retries so that we can learn from each one.
-    let mut crossing_weights: Vec<f32> = (0..config.crossing_count).map(|_| 1.0).collect();
-
-    // Establish initial arc consistency (including dupe-checking). If we can't even do that, we're
-    // obviously not going to be able to find a fill.
-    let slot_weights = calculate_slot_weights(config, &slots, &crossing_weights);
+    // Seed the scratch slots and, unless we were handed a precomputed baseline, run the initial
+    // arc-consistency pass. With a baseline we skip straight to the per-worker cardinality gate,
+    // which is read-only over the already-propagated domains and so can run per target.
+    let mut slots: Vec<Slot>;
     let mut initial_arc_consistency_time = Duration::default();
-    if !maintain_arc_consistency(
-        config,
-        &mut slots,
-        &mut crossing_weights,
-        &slot_weights,
-        &ArcConsistencyMode::Initial,
-        &mut initial_arc_consistency_time,
-        elimination_sets,
-        options.minimum_preferred_words,
-    ) {
-        return Err(FillFailure::HardFailure);
+    match options.baseline_slots {
+        Some(baseline) => {
+            slots = baseline.to_vec();
+            if !can_satisfy_minimum_preferred_words(config, &slots, options.minimum_preferred_words)
+            {
+                return Err(FillFailure::HardFailure);
+            }
+        }
+        None => {
+            slots = build_scratch_slots(config);
+            let slot_weights = calculate_slot_weights(config, &slots, &crossing_weights);
+            if !maintain_arc_consistency(
+                config,
+                &mut slots,
+                &mut crossing_weights,
+                &slot_weights,
+                &ArcConsistencyMode::Initial,
+                &mut initial_arc_consistency_time,
+                elimination_sets,
+                options.minimum_preferred_words,
+            ) {
+                return Err(FillFailure::HardFailure);
+            }
+        }
     }
 
     // We cap the number of backtracks for each retry so that we don't get hung up for too long on a
