@@ -1,0 +1,20 @@
+# Advertising and layout fragments the all-caps miner cannot distinguish from
+# institutional initialisms: logo type, product codes and column-broken words.
+ata
+blu
+bry
+dbp
+snip
+timo
+přím
+brasil
+# Masthead. The people who make the magazine recur in every issue, so salience
+# promotes them, and none of them is a theme word. metropolitan_theme_dict.py already
+# carries some of these in DEFAULT_STOPWORDS; these are the ones it misses.
+poňuchálek
+gregorová
+žáková
+vašíčková
+burián
+opálková
+šavelová

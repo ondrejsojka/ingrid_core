@@ -1,0 +1,69 @@
+# Terms the automatic gates in scripts/theme_tier.py cannot get right, and why.
+#
+# The gates reject a candidate when a national reference corpus says it is common
+# (CSTenTen score >= 41) or when MorphoDiTa reads it as a personal name. Both are
+# correct in general and wrong for one specific, small class: the words a
+# publication owns outright. Brno is nationally common *because* it is a city of
+# 400 000 people, and it is still the single most Brno word there is. Masna and
+# Prygl parse as surnames because Czech street and lake nicknames look like them.
+#
+# Every publication needs a list like this and it is the only irreducibly manual
+# part of the tier. It stays short: the city's own name and its cases, the local
+# university initialisms, and the landmark nicknames locals use instead of the
+# official name. Roughly forty entries, written once per publication, not per issue.
+
+# the city itself, all cases (Ci so? -> BRNA, CLUES.md section 4)
+brno
+brna
+brnu
+brně
+brnem
+brněnsko
+brňák
+brňáci
+brňan
+
+# universities and institutes as locals say them
+vut
+muni
+jamu
+mzlu
+moú
+ceitec
+
+# landmarks and nicknames that outrank the official name in speech
+petrov
+špilberk
+lužánky
+zelňák
+moravák
+svoboďák
+prýgl
+hády
+boby
+mahen
+kumst
+vaňkovka
+zbrojovka
+kometa
+
+# central streets and squares, rejected as surnames or as common adjectives
+masná
+česká
+orlí
+úvoz
+cejl
+křenová
+veveří
+joštova
+kobližná
+zvonařka
+
+# the register CLUES.md section 3 declares safe for a city-hall magazine
+šalina
+štatl
+šlus
+čudu
+hantec
+hody
+komín
