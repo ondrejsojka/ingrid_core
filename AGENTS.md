@@ -36,7 +36,7 @@ State is explicit and mutable rather than global: `WordList` owns dictionary sta
 
 ## Development Commands
 
-There is no Makefile, task runner, or CI configuration. Use Cargo directly from the repository root:
+Use Cargo directly from the repository root:
 
 ```sh
 cargo check
@@ -77,6 +77,7 @@ cargo run --release -- \
 - Keep telemetry cheap: `SearchEvent` is scalar and intended to avoid allocation in the scheduler path.
 - Word handling is normalization-sensitive. Apply the same normalization policy to grids, dictionaries, and blocklists; `--ignore-diacritics` affects all three and output.
 - Feature-gated behavior belongs behind existing Cargo features (`serde`, `check_invariants`) where applicable.
+- Do not preserve backwards compatibility.
 
 Python scripts generally emit deterministic `word;score` dictionaries and optional CSV/JSON audit artifacts. Preserve exact-normalized denylist precedence and cache fingerprint checks when changing those pipelines. `scripts/fill_margin.py` is a calibrated pre-search heuristic, not a solution-count estimator; `fillability-slack.md` describes proposals, including commands that may not exist.
 
@@ -95,11 +96,10 @@ Python scripts generally emit deterministic `word;score` dictionaries and option
 
 ## Runtime/Tooling Preferences
 
-- Required runtime: a Rust/Cargo toolchain supporting edition 2021. No minimum Rust version or `rust-toolchain` pin is declared.
-- Package/build manager: Cargo. This is one crate, not a workspace.
 - `Cargo.lock` may exist locally but is intentionally ignored; do not commit it unless repository policy changes.
-- Optional Python workflows have script-specific external requirements, notably `curl`, `pdftotext`, NumPy, and MorphoDiTa/model files. Read each script's `--help`; generated data normally belongs under ignored `local/`.
+- Optional Python workflows have script-specific external requirements, notably `curl`, `pdftotext`, NumPy, and MorphoDiTa/model files. Read each script's `--help`; generated data normally belongs under ignored `local/`. Prefer to use `uv`.
 - Build profiles, including tests, use `opt-level = 3`, LTO, and one codegen unit, so first builds/tests may be slower than a default Cargo project.
+- The scout subagent is smarter than you think; feel free to use it.
 
 ## Testing & QA
 
