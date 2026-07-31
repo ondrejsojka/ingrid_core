@@ -444,9 +444,9 @@ pub struct WordList {
     /// The last seen state of each word list source, keyed by source id.
     pub source_states: HashMap<String, WordListSourceState>,
 
-    /// Source ids and their current indices for sources whose words are preferred during filling.
+    /// Source ids and a dense source-indexed table identifying preferred sources.
     preferred_source_ids: HashSet<String>,
-    preferred_source_indices: HashSet<u16>,
+    preferred_source_indices: Vec<bool>,
 
     /// Do we have pending updates that need to be saved? If we try to sync and it fails, we'll
     /// reset this to `false` to avoid infinite-looping, but the changes will still be available on
@@ -477,7 +477,7 @@ impl WordList {
             personal_list_index,
             source_states: HashMap::new(),
             preferred_source_ids: HashSet::new(),
-            preferred_source_indices: HashSet::new(),
+            preferred_source_indices: vec![],
             needs_sync: false,
         };
 
@@ -501,7 +501,7 @@ impl WordList {
         let word = self.get_word(global_word_id);
         if word
             .source_index
-            .is_some_and(|index| self.preferred_source_indices.contains(&index))
+            .is_some_and(|index| self.preferred_source_indices[usize::from(index)])
         {
             WordTier::Preferred
         } else {
@@ -513,9 +513,7 @@ impl WordList {
         self.preferred_source_indices = self
             .source_configs
             .iter()
-            .enumerate()
-            .filter(|(_, source)| self.preferred_source_ids.contains(&source.id))
-            .map(|(index, _)| u16::try_from(index).expect("Too many word list sources"))
+            .map(|source| self.preferred_source_ids.contains(&source.id))
             .collect();
     }
 
@@ -661,7 +659,6 @@ impl WordList {
         silent: bool,
     ) -> (bool, HashSet<GlobalWordId>) {
         self.source_configs = source_configs;
-        self.refresh_preferred_source_indices();
         self.personal_list_index = personal_list_index;
         self.max_length = max_length;
 
@@ -752,6 +749,7 @@ impl WordList {
         for ((length, word_id), score) in hidden_personal_scores {
             self.words[length][word_id].personal_word_score = Some(score);
         }
+        self.refresh_preferred_source_indices();
 
         if let Some(mut on_update) = self.on_update.take() {
             on_update(self, &newly_added_words);
@@ -1367,6 +1365,11 @@ pub mod tests {
         );
         assert_eq!(tier(&word_list, "shared"), WordTier::Standard);
         assert_eq!(tier(&word_list, "alpha"), WordTier::Preferred);
+
+        word_list.optimistically_delete_word("shared", "standard");
+        assert_eq!(tier(&word_list, "shared"), WordTier::Preferred);
+        word_list.optimistically_update_word("shared", 50, "standard");
+        assert_eq!(tier(&word_list, "shared"), WordTier::Standard);
     }
 
     #[test]
