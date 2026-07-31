@@ -2,7 +2,13 @@ use clap::Parser;
 use ingrid_core::backtracking_search::FillFailure;
 use ingrid_core::grid_config::{generate_grid_config_from_template_string, render_grid};
 use ingrid_core::parallel_search::{
-    find_best_fill, find_best_fill_with_observer, SearchEvent, SearchEventKind, SearchEventResult,
+    find_best_fill, find_best_fill_with_observer, prepare_search, SearchEvent, SearchEventKind,
+    SearchEventResult,
+};
+
+use ingrid_core::variant_estimate::{
+    estimate_variants, InconclusiveReason, SamplingDiagnostics, VariantEstimate,
+    VariantEstimateOptions, VariantEstimateOutcome,
 };
 use ingrid_core::word_list::{
     normalize_word, NormalizationSettings, WordList, WordListSourceConfig,
@@ -131,6 +137,30 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     search_log: Option<String>,
 
+    /// Estimate how many distinct fills are at least as Preferred-heavy as the returned fill
+    #[arg(long, default_value_t = false)]
+    estimate_variants: bool,
+
+    /// Maximum estimator/search runtime ratio; values above 0.5 are capped
+    #[arg(long, default_value_t = 0.45)]
+    estimate_runtime_ratio: f32,
+
+    /// Absolute estimator time cap in seconds
+    #[arg(long)]
+    estimate_max_time: Option<u64>,
+
+    /// Random seed for search workers and variant-estimation walks
+    #[arg(long, default_value_t = 0)]
+    seed: u64,
+
+    /// Maximum variant-estimation walks; calibration selects a feasible fixed cohort
+    #[arg(long, default_value_t = 16)]
+    estimate_walks: usize,
+
+    /// Probability of following the incumbent value at each sampled decision
+    #[arg(long, default_value_t = 0.98)]
+    estimate_guide_probability: f64,
+
     /// Print timing information along with the grid
     #[arg(short, long, default_value_t = false)]
     time: bool,
@@ -155,9 +185,86 @@ fn fill_failure_error(failure: FillFailure) -> Error {
     })
 }
 
+fn print_sampling(sampling: &SamplingDiagnostics) {
+    eprintln!(
+        "accepted walks: {} / {}",
+        sampling.accepted_walk_count, sampling.walk_count
+    );
+    eprintln!("effective samples: {:.1}", sampling.effective_sample_size);
+}
+
+fn print_variant_estimate(estimate: &VariantEstimate) {
+    eprintln!(
+        "variant estimate for preferred >= {}:",
+        estimate.minimum_preferred_words
+    );
+    let capped = if estimate.known_distinct_fills_capped {
+        "+"
+    } else {
+        ""
+    };
+    eprintln!(
+        "known distinct fills: {}{capped}",
+        estimate.known_distinct_fills
+    );
+    match &estimate.outcome {
+        VariantEstimateOutcome::Exact { count: 0 } => {
+            eprintln!("estimated fills: 0 (exact)");
+            eprintln!("estimated slack: -infinity");
+        }
+        VariantEstimateOutcome::Exact { count } => {
+            eprintln!("estimated fills: {count} (exact)");
+            eprintln!("estimated additional variants: {}", count.saturating_sub(1));
+            eprintln!("estimated slack: {:.1} bits", (*count as f64).log2());
+        }
+        VariantEstimateOutcome::Estimated {
+            count,
+            slack_bits,
+            interval_bits: (lower, upper),
+            sampling,
+        } => {
+            eprintln!("estimated fills: ~{count:.3e}");
+            eprintln!(
+                "estimated additional variants: ~{:.3e}",
+                (count - 1.0).max(0.0)
+            );
+            eprintln!("estimated slack: {slack_bits:.1} bits");
+            eprintln!("nominal 95% spread: {lower:.1}-{upper:.1} bits");
+            print_sampling(sampling);
+            if sampling.effective_sample_size < 2.0 {
+                eprintln!(
+                    "estimate note: weights are dominated by one effective sample; rely on the \
+                     certified lower bound and nominal spread"
+                );
+            }
+        }
+        VariantEstimateOutcome::Inconclusive { reason, sampling } => {
+            let reason = match reason {
+                InconclusiveReason::InvalidOptions => "invalid options",
+                InconclusiveReason::InvalidIncumbent => "invalid incumbent",
+                InconclusiveReason::InsufficientBudget => "insufficient budget",
+                InconclusiveReason::InsufficientEvidence => "insufficient evidence",
+            };
+            eprintln!("estimate: {reason}");
+            if let Some(sampling) = sampling {
+                print_sampling(sampling);
+            }
+        }
+    }
+    eprintln!(
+        "estimator time: {:.3} s ({:.1}% of search time)",
+        estimate.elapsed.as_secs_f64(),
+        100.0 * estimate.search_runtime_ratio
+    );
+}
+
 fn main() -> Result<(), Error> {
     let args = Args::parse();
-
+    if !args.estimate_runtime_ratio.is_finite() || args.estimate_runtime_ratio < 0.0 {
+        return Err(Error(
+            "--estimate-runtime-ratio must be a finite nonnegative number".into(),
+        ));
+    }
     let normalization = args.ignore_diacritics.then_some(NormalizationSettings {
         strip_punctuation: false,
         convert_diacritics: true,
@@ -284,6 +391,12 @@ fn main() -> Result<(), Error> {
 
     let timeout = (args.timeout != 0).then(|| Duration::from_secs(args.timeout));
     let worker_count = args.cores.map(NonZeroUsize::get);
+    let config_ref = grid_config.to_config_ref();
+    let search_start = Instant::now();
+    let deadline = timeout.map(|timeout| search_start + timeout);
+    let prepared = prepare_search(&config_ref).map_err(fill_failure_error)?;
+    let remaining_timeout =
+        deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
     let result = if let Some(search_log_path) = args.search_log.as_deref() {
         let mut search_log = SearchCsvLog::open(search_log_path).map_err(|error| {
             Error(format!(
@@ -292,9 +405,11 @@ fn main() -> Result<(), Error> {
         })?;
         let mut search_log_error = None;
         let result = find_best_fill_with_observer(
-            &grid_config.to_config_ref(),
-            timeout,
+            &config_ref,
+            &prepared,
+            remaining_timeout,
             worker_count,
+            args.seed,
             |event| {
                 if search_log_error.is_none() {
                     if let Err(error) = search_log.write_event(event) {
@@ -310,16 +425,42 @@ fn main() -> Result<(), Error> {
         }
         result
     } else {
-        find_best_fill(&grid_config.to_config_ref(), timeout, worker_count)
+        find_best_fill(
+            &config_ref,
+            &prepared,
+            remaining_timeout,
+            worker_count,
+            args.seed,
+        )
     }
     .map_err(fill_failure_error)?;
 
+    let search_elapsed = search_start.elapsed();
     let fill_time = start.elapsed() - word_list_time;
 
     println!(
         "{}",
-        render_grid(&grid_config.to_config_ref(), &result.fill.choices).replace('.', "#")
+        render_grid(&config_ref, &result.fill.choices).replace('.', "#")
     );
+
+    if args.estimate_variants {
+        let estimate_options = VariantEstimateOptions {
+            runtime_ratio: args.estimate_runtime_ratio,
+            worker_count,
+            walk_count: args.estimate_walks,
+            rng_seed: args.seed,
+            maximum_duration: args.estimate_max_time.map(Duration::from_secs),
+            guide_probability: args.estimate_guide_probability,
+        };
+        let estimate = estimate_variants(
+            &config_ref,
+            &prepared,
+            &result,
+            search_elapsed,
+            &estimate_options,
+        );
+        print_variant_estimate(&estimate);
+    }
 
     if args.time {
         let discovered_preferred_word_count =
