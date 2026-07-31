@@ -3,6 +3,7 @@
 use crate::backtracking_search::{find_fill_from_prepared, FillFailure, FillOptions, FillSuccess};
 use crate::grid_config::{Choice, GridConfig};
 pub use crate::live_state::PreparedSearch;
+use crate::types::WordId;
 use crate::word_list::WordTier;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,6 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const SCHEDULER_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const MAX_CERTIFIED_SEARCH_FILLS: usize = 100_000;
 
 /// A fill together with the preferred-word objective value it achieved.
 #[derive(Debug)]
@@ -20,6 +22,13 @@ pub struct PreferredFillSuccess {
     pub preferred_word_count: usize,
     /// Preferred words already fixed in the input grid.
     pub fixed_preferred_word_count: usize,
+    /// Distinct solver-produced fills matching this result's Preferred threshold.
+    ///
+    /// These are certified lower-bound evidence, not probability-weighted estimator samples.
+    /// Keys are slot-indexed assignments tied to the [`GridConfig`] used for this search.
+    pub certified_fills: BTreeSet<Box<[WordId]>>,
+    /// True when additional distinct qualifying worker fills were dropped at the memory cap.
+    pub certified_fills_capped: bool,
 }
 
 /// The scheduler transition represented by a [`SearchEvent`].
@@ -161,6 +170,38 @@ pub fn count_preferred_words(config: &GridConfig, choices: &[Choice]) -> usize {
         .count()
 }
 
+pub(crate) fn canonical_fill_key(config: &GridConfig, choices: &[Choice]) -> Option<Box<[WordId]>> {
+    if choices.len() != config.slot_configs.len() {
+        return None;
+    }
+    let mut by_slot = vec![None; choices.len()];
+    for choice in choices {
+        let destination = by_slot.get_mut(choice.slot_id)?;
+        if destination.replace(choice.word_id).is_some() {
+            return None;
+        }
+    }
+    by_slot
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .map(Vec::into_boxed_slice)
+}
+
+fn retain_certified_fill(
+    fills: &mut BTreeSet<Box<[WordId]>>,
+    capped: &mut bool,
+    fill: Box<[WordId]>,
+) {
+    if fills.contains(&fill) {
+        return;
+    }
+    if fills.len() >= MAX_CERTIFIED_SEARCH_FILLS {
+        *capped = true;
+    } else {
+        fills.insert(fill);
+    }
+}
+
 fn fixed_preferred_word_count(config: &GridConfig) -> usize {
     config
         .slot_configs
@@ -273,6 +314,7 @@ pub fn find_best_fill(
     config: &GridConfig,
     timeout: Option<Duration>,
     worker_count: Option<usize>,
+    rng_seed: u64,
 ) -> Result<PreferredFillSuccess, FillFailure> {
     let start = Instant::now();
     let prepared = prepare_search(config)?;
@@ -280,7 +322,7 @@ pub fn find_best_fill(
     if timeout.is_some() && remaining == Some(Duration::ZERO) {
         return Err(FillFailure::Timeout);
     }
-    find_best_fill_prepared(config, &prepared, remaining, worker_count)
+    find_best_fill_prepared(config, &prepared, remaining, worker_count, rng_seed)
 }
 
 /// Establish initial arc consistency once for search workers and optional post-search analysis.
@@ -294,8 +336,9 @@ pub fn find_best_fill_prepared(
     prepared: &PreparedSearch,
     timeout: Option<Duration>,
     worker_count: Option<usize>,
+    rng_seed: u64,
 ) -> Result<PreferredFillSuccess, FillFailure> {
-    find_best_fill_internal(config, prepared, timeout, worker_count, None)
+    find_best_fill_internal(config, prepared, timeout, worker_count, None, rng_seed)
 }
 
 fn emit_early_return(
@@ -355,6 +398,7 @@ pub fn find_best_fill_with_observer(
     config: &GridConfig,
     timeout: Option<Duration>,
     worker_count: Option<usize>,
+    rng_seed: u64,
     mut observer: impl FnMut(SearchEvent),
 ) -> Result<PreferredFillSuccess, FillFailure> {
     let start = Instant::now();
@@ -366,7 +410,14 @@ pub fn find_best_fill_with_observer(
     if timeout.is_some() && remaining == Some(Duration::ZERO) {
         return emit_early_return(config, start, &mut observer, FillFailure::Timeout);
     }
-    find_best_fill_prepared_with_observer(config, &prepared, remaining, worker_count, &mut observer)
+    find_best_fill_prepared_with_observer(
+        config,
+        &prepared,
+        remaining,
+        worker_count,
+        rng_seed,
+        &mut observer,
+    )
 }
 
 /// Search from a prepared root while reporting scheduler transitions.
@@ -375,9 +426,17 @@ pub fn find_best_fill_prepared_with_observer(
     prepared: &PreparedSearch,
     timeout: Option<Duration>,
     worker_count: Option<usize>,
+    rng_seed: u64,
     mut observer: impl FnMut(SearchEvent),
 ) -> Result<PreferredFillSuccess, FillFailure> {
-    find_best_fill_internal(config, prepared, timeout, worker_count, Some(&mut observer))
+    find_best_fill_internal(
+        config,
+        prepared,
+        timeout,
+        worker_count,
+        Some(&mut observer),
+        rng_seed,
+    )
 }
 
 #[allow(clippy::too_many_lines)]
@@ -387,6 +446,7 @@ fn find_best_fill_internal(
     timeout: Option<Duration>,
     worker_count: Option<usize>,
     mut observer: Option<&mut dyn FnMut(SearchEvent)>,
+    rng_seed: u64,
 ) -> Result<PreferredFillSuccess, FillFailure> {
     let worker_count = worker_count
         .unwrap_or_else(|| thread::available_parallelism().map_or(1, usize::from))
@@ -507,7 +567,8 @@ fn find_best_fill_internal(
                             FillOptions {
                                 minimum_preferred_words: target,
                                 abort: Some(abort.as_ref()),
-                                rng_seed_offset: id.wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                                rng_seed_offset: rng_seed
+                                    .wrapping_add(id.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
                             },
                         );
                         let _ = sender.send(WorkerResult {
@@ -571,11 +632,24 @@ fn find_best_fill_internal(
                                 let incumbent_improved = previous_incumbent
                                     .is_none_or(|current| preferred_word_count > current);
                                 if incumbent_improved {
+                                    let fill_key = canonical_fill_key(config, &fill.choices)
+                                        .expect("solver fills contain one choice per slot");
                                     best = Some(PreferredFillSuccess {
                                         fill,
                                         preferred_word_count,
                                         fixed_preferred_word_count,
+                                        certified_fills: BTreeSet::from([fill_key]),
+                                        certified_fills_capped: false,
                                     });
+                                } else if previous_incumbent == Some(preferred_word_count) {
+                                    let fill_key = canonical_fill_key(config, &fill.choices)
+                                        .expect("solver fills contain one choice per slot");
+                                    let best = best.as_mut().expect("equal incumbent exists");
+                                    retain_certified_fill(
+                                        &mut best.certified_fills,
+                                        &mut best.certified_fills_capped,
+                                        fill_key,
+                                    );
                                 }
                                 cancel_matching(&active, |target| target <= preferred_word_count);
 
@@ -696,74 +770,86 @@ fn find_best_fill_internal(
 
             cancel_matching(&active, |_| true);
 
-            // A scoped thread join already waits for these workers on the unobserved path. When
-            // observing, consume their final messages as well so aborts and other races are
-            // reported before the final-return event.
-            if observer.is_some() {
-                drop(sender);
-                while !active.is_empty() {
-                    let Ok(WorkerResult {
-                        id,
-                        minimum_preferred_words: target,
-                        result,
-                    }) = receiver.recv()
-                    else {
-                        break;
-                    };
-                    active.remove(&id);
+            // Consume cancellation races on both observed and unobserved paths. Late successful
+            // fills remain useful as certified evidence even though they cannot affect scheduling.
+            drop(sender);
+            while !active.is_empty() {
+                let Ok(WorkerResult {
+                    id,
+                    minimum_preferred_words: target,
+                    result,
+                }) = receiver.recv()
+                else {
+                    break;
+                };
+                active.remove(&id);
 
-                    let (kind, details) = match result {
-                        Ok(fill) => (
+                let (kind, details) = match result {
+                    Ok(fill) => {
+                        let statistics = (
+                            fill.statistics.states,
+                            fill.statistics.backtracks,
+                            fill.statistics.retries,
+                        );
+                        if let Some(best) = best.as_mut() {
+                            let preferred_word_count = count_preferred_words(config, &fill.choices);
+                            if preferred_word_count >= best.preferred_word_count {
+                                let fill_key = canonical_fill_key(config, &fill.choices)
+                                    .expect("solver fills contain one choice per slot");
+                                retain_certified_fill(
+                                    &mut best.certified_fills,
+                                    &mut best.certified_fills_capped,
+                                    fill_key,
+                                );
+                            }
+                        }
+                        (
                             SearchEventKind::Success,
                             EventDetails {
                                 worker: Some((id, target)),
-                                statistics: Some((
-                                    fill.statistics.states,
-                                    fill.statistics.backtracks,
-                                    fill.statistics.retries,
-                                )),
+                                statistics: Some(statistics),
                                 result: Some(SearchEventResult::Success),
                             },
-                        ),
-                        Err(FillFailure::HardFailure) => (
-                            SearchEventKind::HardFailure,
-                            EventDetails {
-                                worker: Some((id, target)),
-                                result: Some(SearchEventResult::HardFailure),
-                                ..EventDetails::default()
-                            },
-                        ),
-                        Err(FillFailure::Timeout) => (
-                            SearchEventKind::Timeout,
-                            EventDetails {
-                                worker: Some((id, target)),
-                                result: Some(SearchEventResult::Timeout),
-                                ..EventDetails::default()
-                            },
-                        ),
-                        Err(FillFailure::Abort) => (
-                            SearchEventKind::Abort,
-                            EventDetails {
-                                worker: Some((id, target)),
-                                result: Some(SearchEventResult::Abort),
-                                ..EventDetails::default()
-                            },
-                        ),
-                        Err(FillFailure::ExceededBacktrackLimit(_)) => unreachable!(
-                            "find_fill_with_options handles retry backtrack limits internally"
-                        ),
-                    };
-                    emit_search_event(
-                        &mut observer,
-                        search_start,
-                        kind,
-                        active.len(),
-                        best.as_ref().map(|success| success.preferred_word_count),
-                        impossible_from,
-                        fixed_preferred_word_count,
-                        details,
-                    );
-                }
+                        )
+                    }
+                    Err(FillFailure::HardFailure) => (
+                        SearchEventKind::HardFailure,
+                        EventDetails {
+                            worker: Some((id, target)),
+                            result: Some(SearchEventResult::HardFailure),
+                            ..EventDetails::default()
+                        },
+                    ),
+                    Err(FillFailure::Timeout) => (
+                        SearchEventKind::Timeout,
+                        EventDetails {
+                            worker: Some((id, target)),
+                            result: Some(SearchEventResult::Timeout),
+                            ..EventDetails::default()
+                        },
+                    ),
+                    Err(FillFailure::Abort) => (
+                        SearchEventKind::Abort,
+                        EventDetails {
+                            worker: Some((id, target)),
+                            result: Some(SearchEventResult::Abort),
+                            ..EventDetails::default()
+                        },
+                    ),
+                    Err(FillFailure::ExceededBacktrackLimit(_)) => unreachable!(
+                        "find_fill_with_options handles retry backtrack limits internally"
+                    ),
+                };
+                emit_search_event(
+                    &mut observer,
+                    search_start,
+                    kind,
+                    active.len(),
+                    best.as_ref().map(|success| success.preferred_word_count),
+                    impossible_from,
+                    fixed_preferred_word_count,
+                    details,
+                );
             }
 
             let final_incumbent = best.as_ref().map(|success| success.preferred_word_count);
@@ -869,7 +955,7 @@ mod tests {
     #[test]
     fn parallel_search_finds_the_optimal_preferred_count() {
         let config = tiered_single_slot_config();
-        let result = find_best_fill(&config.to_config_ref(), None, Some(2)).unwrap();
+        let result = find_best_fill(&config.to_config_ref(), None, Some(2), 0).unwrap();
         assert_eq!(result.preferred_word_count, 1);
     }
 
@@ -878,7 +964,7 @@ mod tests {
         let config = tiered_single_slot_config();
         let mut events = Vec::new();
         let result =
-            find_best_fill_with_observer(&config.to_config_ref(), None, Some(1), |event| {
+            find_best_fill_with_observer(&config.to_config_ref(), None, Some(1), 0, |event| {
                 events.push(event);
             })
             .unwrap();
@@ -934,7 +1020,7 @@ mod tests {
             generate_grid_config_from_template_string(tiered_word_list(), "...\n.#.\n...\n", 0);
         let mut events = Vec::new();
         let result =
-            find_best_fill_with_observer(&config.to_config_ref(), None, Some(1), |event| {
+            find_best_fill_with_observer(&config.to_config_ref(), None, Some(1), 0, |event| {
                 events.push(event);
             });
 
@@ -960,6 +1046,7 @@ mod tests {
             &config.to_config_ref(),
             Some(Duration::ZERO),
             Some(1),
+            0,
             |event| events.push(event),
         );
 
@@ -980,7 +1067,7 @@ mod tests {
         config.abort = Some(Arc::new(AtomicBool::new(true)));
         let mut events = Vec::new();
         let result =
-            find_best_fill_with_observer(&config.to_config_ref(), None, Some(1), |event| {
+            find_best_fill_with_observer(&config.to_config_ref(), None, Some(1), 0, |event| {
                 events.push(event);
             });
 
@@ -999,7 +1086,7 @@ mod tests {
         let config = generate_grid_config_from_template_string(tiered_word_list(), "cat\n", 0);
         let mut events = Vec::new();
         let result =
-            find_best_fill_with_observer(&config.to_config_ref(), None, Some(1), |event| {
+            find_best_fill_with_observer(&config.to_config_ref(), None, Some(1), 0, |event| {
                 events.push(event);
             })
             .unwrap();

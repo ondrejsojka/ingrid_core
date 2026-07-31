@@ -48,6 +48,8 @@ impl LiveSearchState {
         let mut elimination_sets = EliminationSet::build_all(config.slot_configs, config.word_list);
         let slot_weights = calculate_slot_weights(config, &slots, &crossing_weights);
         let mut initial_arc_consistency_time = Duration::default();
+        // Build target-neutral domains once: the Preferred bound rejects states but never
+        // eliminates values, so each worker can safely apply its own target to this shared root.
         if !maintain_arc_consistency(
             config,
             &mut slots,

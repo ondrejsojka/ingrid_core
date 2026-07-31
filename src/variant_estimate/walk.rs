@@ -10,7 +10,6 @@ use crate::live_state::LiveSearchState;
 use crate::types::WordId;
 
 const RESULT_BATCH_SIZE: usize = 256;
-const WALK_SEED_NAMESPACE: u64 = 0x5741_4c4b_0000_0000; // "WALK"
 
 #[derive(Debug)]
 pub(super) enum WalkOutcome {
@@ -100,8 +99,16 @@ pub(super) fn collect_walks(
     worker_count: usize,
     walk_limit: usize,
     rng_seed: u64,
-    deadline: Instant,
+    seed_namespace: u64,
+    deadline: Option<Instant>,
 ) -> SampleBatch {
+    if walk_limit == 0 {
+        return SampleBatch {
+            outcomes: Vec::new(),
+            complete: true,
+        };
+    }
+    let worker_count = worker_count.min(walk_limit);
     let next_index = AtomicUsize::new(0);
     let mut outcomes = thread::scope(|scope| {
         let (sender, receiver) = mpsc::channel::<Vec<IndexedOutcome>>();
@@ -113,11 +120,13 @@ pub(super) fn collect_walks(
                 let mut batch = Vec::with_capacity(RESULT_BATCH_SIZE);
                 loop {
                     let index = next_index.fetch_add(1, Ordering::Relaxed);
-                    if index >= walk_limit || Instant::now() >= deadline {
+                    if index >= walk_limit
+                        || deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                    {
                         break;
                     }
                     let mut rng = SmallRng::seed_from_u64(splitmix64(
-                        rng_seed ^ WALK_SEED_NAMESPACE ^ index as u64,
+                        rng_seed ^ seed_namespace ^ index as u64,
                     ));
                     match run_walk(
                         config,
@@ -166,7 +175,7 @@ fn run_walk(
     minimum_preferred_words: usize,
     incumbent_words: &[WordId],
     proposal: &RankProposal,
-    deadline: Instant,
+    deadline: Option<Instant>,
     rng: &mut SmallRng,
 ) -> Interruptible<(WalkOutcome, LiveSearchState)> {
     let mut explicit_choices = Vec::new();
@@ -174,7 +183,7 @@ fn run_walk(
     let mut log2_probability: f64 = 0.0;
 
     let outcome = loop {
-        if Instant::now() >= deadline {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Err(Interrupted);
         }
         let Some(slot_id) = state.best_slot_by_priority(config) else {
@@ -242,11 +251,17 @@ mod tests {
     #[test]
     fn rank_proposal_probabilities_match_sampling_components() {
         let proposal = RankProposal::new(3, 0.8);
+        let rank_total = 1.0 + 0.25 + 1.0 / 9.0;
         let mut rng = SmallRng::seed_from_u64(7);
         for _ in 0..100 {
             let (selected, probability) = proposal.sample(3, Some(1), &mut rng);
-            assert!(selected < 3);
-            assert!(probability > 0.0 && probability <= 1.0);
+            let rank_probability = (1.0 / ((selected + 1) as f64).powi(2)) / rank_total;
+            let expected = 0.2_f64.mul_add(rank_probability, if selected == 1 { 0.8 } else { 0.0 });
+            assert!((probability - expected).abs() < f64::EPSILON);
+
+            let (selected, probability) = proposal.sample(3, None, &mut rng);
+            let expected = (1.0 / ((selected + 1) as f64).powi(2)) / rank_total;
+            assert!((probability - expected).abs() < f64::EPSILON);
         }
     }
 }

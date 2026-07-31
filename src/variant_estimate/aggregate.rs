@@ -40,9 +40,7 @@ impl CohortStatistics {
             return None;
         }
         let raw_slack_bits = self.log2_weight_sum - (self.walk_count as f64).log2();
-        let raw_count = 2.0_f64.powf(raw_slack_bits);
-        let known_lower_bound = known_lower_bound as f64;
-        let count = raw_count.max(known_lower_bound);
+        let count = 2.0_f64.powf(raw_slack_bits).max(known_lower_bound as f64);
         let slack_bits = count.log2();
         let relative_variance = (self.walk_count as f64
             * 2.0_f64.powf(self.log2_squared_weight_sum - 2.0 * self.log2_weight_sum)
@@ -53,10 +51,8 @@ impl CohortStatistics {
         } else {
             0.0
         };
-        let lower = (raw_count * (1.0 - 1.96 * relative_standard_error))
-            .max(known_lower_bound)
-            .max(f64::MIN_POSITIVE);
-        let upper = (raw_count * (1.0 + 1.96 * relative_standard_error)).max(lower);
+        let lower = (count * (1.0 - 1.96 * relative_standard_error)).max(f64::MIN_POSITIVE);
+        let upper = (count * (1.0 + 1.96 * relative_standard_error)).max(lower);
         Some(Summary {
             count,
             slack_bits,
@@ -150,5 +146,23 @@ mod tests {
         let statistics = summarize(&outcomes);
         let estimate = statistics.estimate(1, 1.0).unwrap();
         assert!((estimate.count - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn certified_point_estimate_never_falls_below_known_fills() {
+        let outcomes = vec![
+            WalkOutcome::Accepted {
+                log2_weight: 2.0,
+                fill: vec![0].into_boxed_slice(),
+            },
+            WalkOutcome::Rejected,
+        ];
+        let estimate = summarize(&outcomes).estimate(1, 1.0).unwrap();
+        assert!((estimate.count - 2.0).abs() < f64::EPSILON);
+        assert!((estimate.slack_bits - 1.0).abs() < f64::EPSILON);
+        let clamped = summarize(&outcomes).estimate(100, 1.0).unwrap();
+        assert!((clamped.count - 100.0).abs() < f64::EPSILON);
+        assert!(clamped.interval_bits.0 <= clamped.slack_bits);
+        assert!(clamped.slack_bits <= clamped.interval_bits.1);
     }
 }

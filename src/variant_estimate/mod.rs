@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use crate::grid_config::GridConfig;
 use crate::live_state::LiveSearchState;
-use crate::parallel_search::{PreferredFillSuccess, PreparedSearch};
+use crate::parallel_search::{canonical_fill_key, PreferredFillSuccess, PreparedSearch};
 use crate::types::WordId;
 
 use self::aggregate::{retain_known_fills, summarize, Summary};
@@ -25,6 +25,11 @@ const MAX_KNOWN_FILLS: usize = 100_000;
 const MINIMUM_EFFECTIVE_SAMPLES: f64 = 1.0;
 const MINIMUM_USEFUL_BUDGET: Duration = Duration::from_millis(20);
 const DEADLINE_FRACTION: f64 = 0.9;
+const CALIBRATION_WALK_COUNT: usize = 1;
+/// Incumbent-path calibration underestimates mixed-proposal walk cost; factor in the bias.
+const COHORT_SAFETY_FACTOR: f64 = 0.5;
+const CALIBRATION_SEED_NAMESPACE: u64 = 0x4341_4c49_4252_4154; // "CALIBRAT"
+const COHORT_SEED_NAMESPACE: u64 = 0x434f_484f_5254_0000; // "COHORT"
 
 /// Controls for post-search variant estimation.
 #[derive(Debug, Clone)]
@@ -33,7 +38,7 @@ pub struct VariantEstimateOptions {
     pub runtime_ratio: f32,
     /// Number of sampling workers. `None` uses all available CPU cores.
     pub worker_count: Option<usize>,
-    /// Fixed cohort size. A deadline-truncated cohort is never used for a numerical estimate.
+    /// Maximum fixed-cohort size. A short independent calibration selects a feasible count.
     pub walk_count: usize,
     /// Seed from which deterministic per-walk random streams are derived.
     pub rng_seed: u64,
@@ -82,6 +87,7 @@ pub enum VariantEstimateOutcome {
     Estimated {
         count: f64,
         slack_bits: f64,
+        /// Nominal 95% normal-approximation spread in log2 space; unreliable at very low ESS.
         interval_bits: (f64, f64),
         sampling: SamplingDiagnostics,
     },
@@ -95,7 +101,7 @@ pub enum VariantEstimateOutcome {
 #[derive(Debug, Clone)]
 pub struct VariantEstimate {
     pub minimum_preferred_words: usize,
-    /// Certified lower bound consisting of the incumbent and retained distinct sampled fills.
+    /// Certified lower bound from search workers, the incumbent, and retained cohort fills.
     pub known_distinct_fills: usize,
     /// True if retention stopped at the internal distinct-fill memory cap.
     pub known_distinct_fills_capped: bool,
@@ -118,13 +124,32 @@ pub fn estimate_variants(
 ) -> VariantEstimate {
     let start = Instant::now();
     let minimum_preferred_words = incumbent.preferred_word_count;
-    let mut known_fills = BTreeSet::from([choice_word_ids(&incumbent.fill.choices)]);
+    let mut known_fills: BTreeSet<Box<[WordId]>> = incumbent
+        .certified_fills
+        .iter()
+        .filter(|fill| fill.len() == config.slot_configs.len())
+        .cloned()
+        .collect();
+    let Some(incumbent_words) = canonical_fill_key(config, &incumbent.fill.choices) else {
+        return finish(
+            minimum_preferred_words,
+            &known_fills,
+            incumbent.certified_fills_capped,
+            start,
+            search_elapsed,
+            VariantEstimateOutcome::Inconclusive {
+                reason: InconclusiveReason::InvalidOptions,
+                sampling: None,
+            },
+        );
+    };
+    known_fills.insert(incumbent_words.clone());
 
     if !valid_options(options) {
         return finish(
             minimum_preferred_words,
             &known_fills,
-            false,
+            incumbent.certified_fills_capped,
             start,
             search_elapsed,
             VariantEstimateOutcome::Inconclusive {
@@ -139,7 +164,7 @@ pub fn estimate_variants(
         return finish(
             minimum_preferred_words,
             &known_fills,
-            false,
+            incumbent.certified_fills_capped,
             start,
             search_elapsed,
             VariantEstimateOutcome::Inconclusive {
@@ -154,7 +179,7 @@ pub fn estimate_variants(
         return finish(
             minimum_preferred_words,
             &known_fills,
-            false,
+            incumbent.certified_fills_capped,
             start,
             search_elapsed,
             VariantEstimateOutcome::Exact { count },
@@ -164,7 +189,7 @@ pub fn estimate_variants(
         return finish(
             minimum_preferred_words,
             &known_fills,
-            false,
+            incumbent.certified_fills_capped,
             start,
             search_elapsed,
             VariantEstimateOutcome::Inconclusive {
@@ -174,26 +199,63 @@ pub fn estimate_variants(
         );
     }
 
-    let incumbent_words = choice_word_ids(&incumbent.fill.choices);
-    let proposal = RankProposal::new(
-        config.slot_options.iter().map(Vec::len).max().unwrap_or(0),
-        options.guide_probability,
+    let maximum_option_count = config.slot_options.iter().map(Vec::len).max().unwrap_or(0);
+    let proposal = RankProposal::new(maximum_option_count, options.guide_probability);
+    let calibration_proposal = RankProposal::new(maximum_option_count, 1.0);
+    let worker_count = resolve_worker_count(options.worker_count);
+    let calibration_walk_count = options
+        .walk_count
+        .min(worker_count)
+        .min(CALIBRATION_WALK_COUNT);
+    let calibration_start = Instant::now();
+    let calibration = collect_walks(
+        config,
+        &prepared.root,
+        minimum_preferred_words,
+        &incumbent_words,
+        &calibration_proposal,
+        worker_count,
+        calibration_walk_count,
+        options.rng_seed,
+        CALIBRATION_SEED_NAMESPACE,
+        Some(deadline),
     );
+    let calibration_elapsed = calibration_start.elapsed();
+    let cohort_walk_count = select_cohort_size(
+        calibration.outcomes.len(),
+        calibration_elapsed,
+        deadline.saturating_duration_since(Instant::now()),
+        options.walk_count,
+    );
+    if cohort_walk_count == 0 {
+        return finish(
+            minimum_preferred_words,
+            &known_fills,
+            incumbent.certified_fills_capped,
+            start,
+            search_elapsed,
+            VariantEstimateOutcome::Inconclusive {
+                reason: InconclusiveReason::InsufficientBudget,
+                sampling: None,
+            },
+        );
+    }
     let batch = collect_walks(
         config,
         &prepared.root,
         minimum_preferred_words,
         &incumbent_words,
         &proposal,
-        resolve_worker_count(options.worker_count),
-        options.walk_count,
+        worker_count,
+        cohort_walk_count,
         options.rng_seed,
-        deadline,
+        COHORT_SEED_NAMESPACE,
+        None,
     );
-    let known_distinct_fills_capped =
+    let sampled_fills_capped =
         retain_known_fills(&batch.outcomes, &mut known_fills, MAX_KNOWN_FILLS);
+    let known_distinct_fills_capped = incumbent.certified_fills_capped || sampled_fills_capped;
     let outcome = cohort_outcome(&batch, known_fills.len());
-
     finish(
         minimum_preferred_words,
         &known_fills,
@@ -255,6 +317,27 @@ fn exact_root_count(
     )))
 }
 
+fn select_cohort_size(
+    completed_calibration_walks: usize,
+    calibration_elapsed: Duration,
+    remaining: Duration,
+    maximum_walk_count: usize,
+) -> usize {
+    if completed_calibration_walks == 0
+        || calibration_elapsed.is_zero()
+        || remaining.is_zero()
+        || maximum_walk_count == 0
+    {
+        return 0;
+    }
+    let observed_throughput =
+        completed_calibration_walks as f64 / calibration_elapsed.as_secs_f64();
+    let feasible = (observed_throughput * remaining.as_secs_f64() * COHORT_SAFETY_FACTOR)
+        .floor()
+        .min(maximum_walk_count as f64);
+    feasible as usize
+}
+
 fn valid_options(options: &VariantEstimateOptions) -> bool {
     options.runtime_ratio.is_finite()
         && options.runtime_ratio >= 0.0
@@ -275,14 +358,6 @@ fn resolve_worker_count(requested: Option<usize>) -> usize {
         .filter(|&count| count > 0)
         .or_else(|| thread::available_parallelism().ok().map(usize::from))
         .unwrap_or(1)
-}
-
-fn choice_word_ids(choices: &[crate::grid_config::Choice]) -> Box<[WordId]> {
-    choices
-        .iter()
-        .map(|choice| choice.word_id)
-        .collect::<Vec<_>>()
-        .into_boxed_slice()
 }
 
 fn finish(

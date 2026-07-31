@@ -65,16 +65,25 @@ consistency, duplicate/shared-substring rules, fixed entries, and Preferred thre
 leaves are inverse-probability weighted, so the incumbent guide improves acceptance without
 excluding other live values.
 
-The estimator budget defaults to 45% of the completed search time.
-`--estimate-runtime-ratio` changes that fraction but is capped at 50%, and
-`--estimate-max-time` adds an absolute seconds cap. `--estimate-walks` selects the fixed cohort size
-(16 by default), `--estimate-guide-probability` controls the incumbent proposal mass, and
-`--estimate-seed` makes every numbered walk reproducible independently of worker count. A cohort
-that cannot finish before the deadline is reported as interrupted rather than averaged
-selectively. The report includes certified distinct fills found, the arithmetic estimate expressed
-as both a count and slack bits, a confidence interval, accepted walks, effective sample size, and
-measured overhead. Zero accepted samples are reported as insufficient evidence, never as zero
-variants.
+The estimator budget targets 45% of the completed search time.
+`--estimate-runtime-ratio` changes that target but is limited to 50%, and
+`--estimate-max-time` caps the target used for cohort selection. One separately seeded,
+deterministic incumbent-path walk measures full-depth traversal cost but contributes no weight or
+fill to the report. A safety margin converts that measurement into a fixed cohort no larger than
+`--estimate-walks` (16 by default).
+
+Once selected, the final randomized cohort runs to completion rather than introducing
+deadline-truncation bias. Consequently, slower exploratory walks and cleanup may exceed the target
+budget. Numbered final walks remain deterministic; machine load can change only the automatically
+selected cohort size.
+
+Successful multicore search workers and completed estimator walks contribute distinct validated
+fills to the certified lower bound. Search fills are not importance samples because their proposal
+probabilities are unknown, so they never enter the weighted estimate. The report includes that
+lower bound, the arithmetic importance estimate as a count and slack bits, a nominal
+normal-approximation spread, accepted walks, effective sample size, and measured overhead. At low
+effective sample size the CLI explicitly labels the estimate as weight-dominated. Zero accepted
+samples are reported as insufficient evidence, never as zero variants.
 
 `--blocklist` takes a file of words that may never appear in a fill, one per line, with `#`
 starting a comment. Matching is exact after the same normalization applied to the word lists, so
@@ -116,10 +125,10 @@ Options:
           Maximum estimator/search runtime ratio; values above 0.5 are capped [default: 0.45]
       --estimate-max-time <ESTIMATE_MAX_TIME>
           Absolute estimator time cap in seconds
-      --estimate-seed <ESTIMATE_SEED>
-          Random seed for variant-estimation walks [default: 0]
+      --seed <SEED>
+          Random seed for search workers and variant-estimation walks [default: 0]
       --estimate-walks <ESTIMATE_WALKS>
-          Fixed number of variant-estimation walks [default: 16]
+          Maximum variant-estimation walks; calibration selects a feasible fixed cohort [default: 16]
       --estimate-guide-probability <ESTIMATE_GUIDE_PROBABILITY>
           Probability of following the incumbent value at each sampled decision [default: 0.98]
   -t, --time
@@ -132,6 +141,12 @@ Options:
 
 `--ignore-diacritics` can substantially enlarge compatible crossing domains for languages that use
 accented letters. Output is unaccented in that mode.
+
+`--seed` (replacing the former `--estimate-seed`) seeds both the parallel search workers and the
+variant-estimation walks; the default 0 reproduces the deterministic default streams. Search
+workers, estimator calibration walks, and cohort walks draw from disjoint seed namespaces
+(golden-ratio-spaced per-worker offsets for search, separate namespace constants for calibration
+and cohort), so changing the seed never brings two consumers onto the same random stream.
 
 For example:
 

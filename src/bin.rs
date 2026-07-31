@@ -148,11 +148,11 @@ struct Args {
     #[arg(long)]
     estimate_max_time: Option<u64>,
 
-    /// Random seed for variant-estimation walks
+    /// Random seed for search workers and variant-estimation walks
     #[arg(long, default_value_t = 0)]
-    estimate_seed: u64,
+    seed: u64,
 
-    /// Fixed number of variant-estimation walks
+    /// Maximum variant-estimation walks; calibration selects a feasible fixed cohort
     #[arg(long, default_value_t = 16)]
     estimate_walks: usize,
 
@@ -228,8 +228,14 @@ fn print_variant_estimate(estimate: &VariantEstimate) {
                 (count - 1.0).max(0.0)
             );
             eprintln!("estimated slack: {slack_bits:.1} bits");
-            eprintln!("interval: {lower:.1}-{upper:.1} bits");
+            eprintln!("nominal 95% spread: {lower:.1}-{upper:.1} bits");
             print_sampling(sampling);
+            if sampling.effective_sample_size < 2.0 {
+                eprintln!(
+                    "estimate note: weights are dominated by one effective sample; rely on the \
+                     certified lower bound and nominal spread"
+                );
+            }
         }
         VariantEstimateOutcome::Inconclusive { reason, sampling } => {
             let reason = match reason {
@@ -402,6 +408,7 @@ fn main() -> Result<(), Error> {
             &prepared,
             remaining_timeout,
             worker_count,
+            args.seed,
             |event| {
                 if search_log_error.is_none() {
                     if let Err(error) = search_log.write_event(event) {
@@ -417,7 +424,13 @@ fn main() -> Result<(), Error> {
         }
         result
     } else {
-        find_best_fill_prepared(&config_ref, &prepared, remaining_timeout, worker_count)
+        find_best_fill_prepared(
+            &config_ref,
+            &prepared,
+            remaining_timeout,
+            worker_count,
+            args.seed,
+        )
     }
     .map_err(fill_failure_error)?;
 
@@ -434,7 +447,7 @@ fn main() -> Result<(), Error> {
             runtime_ratio: args.estimate_runtime_ratio.min(0.5),
             worker_count,
             walk_count: args.estimate_walks,
-            rng_seed: args.estimate_seed,
+            rng_seed: args.seed,
             maximum_duration: args.estimate_max_time.map(Duration::from_secs),
             guide_probability: args.estimate_guide_probability,
         };
