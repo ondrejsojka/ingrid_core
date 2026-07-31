@@ -13,6 +13,7 @@ pub mod arc_consistency;
 pub mod backtracking_search;
 pub mod dupe_index;
 pub mod grid_config;
+mod live_state;
 pub mod parallel_search;
 pub mod types;
 pub mod util;

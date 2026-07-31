@@ -2,11 +2,12 @@ use clap::Parser;
 use ingrid_core::backtracking_search::FillFailure;
 use ingrid_core::grid_config::{generate_grid_config_from_template_string, render_grid};
 use ingrid_core::parallel_search::{
-    find_best_fill, find_best_fill_with_observer, SearchEvent, SearchEventKind, SearchEventResult,
+    find_best_fill_prepared, find_best_fill_prepared_with_observer, prepare_search, SearchEvent,
+    SearchEventKind, SearchEventResult,
 };
 use ingrid_core::variant_estimate::{
-    estimate_variants, VariantEstimate, VariantEstimateMethod, VariantEstimateOptions,
-    VariantEstimateStatus,
+    estimate_variants, InconclusiveReason, SamplingDiagnostics, VariantEstimate,
+    VariantEstimateOptions, VariantEstimateOutcome,
 };
 use ingrid_core::word_list::{
     normalize_word, NormalizationSettings, WordList, WordListSourceConfig,
@@ -151,6 +152,14 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     estimate_seed: u64,
 
+    /// Fixed number of variant-estimation walks
+    #[arg(long, default_value_t = 16)]
+    estimate_walks: usize,
+
+    /// Probability of following the incumbent value at each sampled decision
+    #[arg(long, default_value_t = 0.98)]
+    estimate_guide_probability: f64,
+
     /// Print timing information along with the grid
     #[arg(short, long, default_value_t = false)]
     time: bool,
@@ -175,6 +184,14 @@ fn fill_failure_error(failure: FillFailure) -> Error {
     })
 }
 
+fn print_sampling(sampling: &SamplingDiagnostics) {
+    eprintln!(
+        "accepted walks: {} / {}",
+        sampling.accepted_walk_count, sampling.walk_count
+    );
+    eprintln!("effective samples: {:.1}", sampling.effective_sample_size);
+}
+
 fn print_variant_estimate(estimate: &VariantEstimate) {
     eprintln!(
         "variant estimate for preferred >= {}:",
@@ -189,53 +206,43 @@ fn print_variant_estimate(estimate: &VariantEstimate) {
         "known distinct fills: {}{capped}",
         estimate.known_distinct_fills
     );
-    match estimate.status {
-        VariantEstimateStatus::Estimated => {
-            let count = estimate.estimated_fill_count.unwrap();
-            let bits = estimate.estimated_slack_bits.unwrap();
+    match &estimate.outcome {
+        VariantEstimateOutcome::Exact { count: 0 } => {
+            eprintln!("estimated fills: 0 (exact)");
+            eprintln!("estimated slack: -infinity");
+        }
+        VariantEstimateOutcome::Exact { count } => {
+            eprintln!("estimated fills: {count} (exact)");
+            eprintln!("estimated additional variants: {}", count.saturating_sub(1));
+            eprintln!("estimated slack: {:.1} bits", (*count as f64).log2());
+        }
+        VariantEstimateOutcome::Estimated {
+            count,
+            slack_bits,
+            interval_bits: (lower, upper),
+            sampling,
+        } => {
             eprintln!("estimated fills: ~{count:.3e}");
             eprintln!(
                 "estimated additional variants: ~{:.3e}",
                 (count - 1.0).max(0.0)
             );
-            eprintln!("estimated slack: {bits:.1} bits");
-            if let Some((lower, upper)) = estimate.interval_slack_bits {
-                eprintln!("interval: {lower:.1}-{upper:.1} bits");
+            eprintln!("estimated slack: {slack_bits:.1} bits");
+            eprintln!("interval: {lower:.1}-{upper:.1} bits");
+            print_sampling(sampling);
+        }
+        VariantEstimateOutcome::Inconclusive { reason, sampling } => {
+            let reason = match reason {
+                InconclusiveReason::InvalidOptions => "invalid options",
+                InconclusiveReason::InsufficientBudget => "insufficient budget",
+                InconclusiveReason::Interrupted => "fixed cohort interrupted",
+                InconclusiveReason::InsufficientEvidence => "insufficient evidence",
+            };
+            eprintln!("estimate: {reason}");
+            if let Some(sampling) = sampling {
+                print_sampling(sampling);
             }
         }
-        VariantEstimateStatus::ExactOne => {
-            eprintln!("estimated fills: 1 (exact)");
-            eprintln!("estimated additional variants: 0");
-            eprintln!("estimated slack: 0.0 bits");
-            eprintln!("interval: 0.0-0.0 bits");
-        }
-        VariantEstimateStatus::ExactZero => {
-            eprintln!("estimated fills: 0 (exact)");
-            eprintln!("estimated slack: -infinity");
-        }
-        VariantEstimateStatus::InsufficientBudget => {
-            eprintln!("estimate: insufficient budget");
-        }
-        VariantEstimateStatus::InsufficientEvidence => {
-            eprintln!("estimate: insufficient evidence");
-        }
-        VariantEstimateStatus::InvalidOptions => {
-            eprintln!("estimate: invalid options");
-        }
-    }
-    match estimate.method {
-        VariantEstimateMethod::ImportanceWalks => eprintln!(
-            "accepted walks: {} / {}",
-            estimate.accepted_walk_count, estimate.walk_count
-        ),
-        VariantEstimateMethod::SequentialMonteCarlo => eprintln!(
-            "accepted SMC replicates: {} / {}",
-            estimate.accepted_walk_count, estimate.walk_count
-        ),
-        VariantEstimateMethod::Exact => {}
-    }
-    if estimate.method != VariantEstimateMethod::Exact {
-        eprintln!("effective samples: {:.1}", estimate.effective_sample_size);
     }
     eprintln!(
         "estimator time: {:.3} s ({:.1}% of search time)",
@@ -377,7 +384,12 @@ fn main() -> Result<(), Error> {
 
     let timeout = (args.timeout != 0).then(|| Duration::from_secs(args.timeout));
     let worker_count = args.cores.map(NonZeroUsize::get);
+    let config_ref = grid_config.to_config_ref();
     let search_start = Instant::now();
+    let deadline = timeout.map(|timeout| search_start + timeout);
+    let prepared = prepare_search(&config_ref).map_err(fill_failure_error)?;
+    let remaining_timeout =
+        deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
     let result = if let Some(search_log_path) = args.search_log.as_deref() {
         let mut search_log = SearchCsvLog::open(search_log_path).map_err(|error| {
             Error(format!(
@@ -385,9 +397,10 @@ fn main() -> Result<(), Error> {
             ))
         })?;
         let mut search_log_error = None;
-        let result = find_best_fill_with_observer(
-            &grid_config.to_config_ref(),
-            timeout,
+        let result = find_best_fill_prepared_with_observer(
+            &config_ref,
+            &prepared,
+            remaining_timeout,
             worker_count,
             |event| {
                 if search_log_error.is_none() {
@@ -404,29 +417,33 @@ fn main() -> Result<(), Error> {
         }
         result
     } else {
-        find_best_fill(&grid_config.to_config_ref(), timeout, worker_count)
+        find_best_fill_prepared(&config_ref, &prepared, remaining_timeout, worker_count)
     }
     .map_err(fill_failure_error)?;
 
-    let fill_time = search_start.elapsed();
+    let search_elapsed = search_start.elapsed();
+    let fill_time = start.elapsed() - word_list_time;
 
     println!(
         "{}",
-        render_grid(&grid_config.to_config_ref(), &result.fill.choices).replace('.', "#")
+        render_grid(&config_ref, &result.fill.choices).replace('.', "#")
     );
 
     if args.estimate_variants {
+        let estimate_options = VariantEstimateOptions {
+            runtime_ratio: args.estimate_runtime_ratio.min(0.5),
+            worker_count,
+            walk_count: args.estimate_walks,
+            rng_seed: args.estimate_seed,
+            maximum_duration: args.estimate_max_time.map(Duration::from_secs),
+            guide_probability: args.estimate_guide_probability,
+        };
         let estimate = estimate_variants(
-            &grid_config.to_config_ref(),
+            &config_ref,
+            &prepared,
             &result,
-            fill_time,
-            VariantEstimateOptions {
-                runtime_ratio: args.estimate_runtime_ratio.min(0.5),
-                worker_count,
-                rng_seed: args.estimate_seed,
-                maximum_duration: args.estimate_max_time.map(Duration::from_secs),
-                ..VariantEstimateOptions::default()
-            },
+            search_elapsed,
+            &estimate_options,
         );
         print_variant_estimate(&estimate);
     }

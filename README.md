@@ -60,18 +60,21 @@ across the remaining viable counts. The CLI returns the best fill found after 60
 
 `--estimate-variants` runs a bounded post-search estimator for the number of distinct valid fills
 containing at least as many Preferred entries as the returned fill. Each randomized root-to-leaf
-walk uses Ingrid's actual incremental arc consistency, duplicate/shared-substring rules, fixed
-entries, and Preferred threshold; accepted leaves are inverse-probability weighted. The default
-estimator budget is 45% of the completed search time. `--estimate-runtime-ratio` changes that
-fraction but is capped at 50%, and `--estimate-max-time` adds an absolute seconds cap.
-`--estimate-seed` makes each numbered walk reproducible. A short timed pilot selects a conservative,
-fixed sample count; pilot outcomes never enter the numerical estimate, and an interrupted fixed
-cohort is reported as insufficient evidence rather than averaged selectively. When independent
-walks have too little effective mass, the estimator spends the remaining budget on independent
-sequential Monte Carlo replicates with bounded particle and memory counts. The report includes a
-certified sampled lower bound, the arithmetic fill estimate expressed as both a count and slack
-bits, an interval, accepted walks or SMC replicates, effective sample size, and measured overhead.
-Zero accepted samples are reported as insufficient evidence, never as zero variants.
+walk reuses the solver's prepared post-AC state and applies Ingrid's actual incremental arc
+consistency, duplicate/shared-substring rules, fixed entries, and Preferred threshold. Accepted
+leaves are inverse-probability weighted, so the incumbent guide improves acceptance without
+excluding other live values.
+
+The estimator budget defaults to 45% of the completed search time.
+`--estimate-runtime-ratio` changes that fraction but is capped at 50%, and
+`--estimate-max-time` adds an absolute seconds cap. `--estimate-walks` selects the fixed cohort size
+(16 by default), `--estimate-guide-probability` controls the incumbent proposal mass, and
+`--estimate-seed` makes every numbered walk reproducible independently of worker count. A cohort
+that cannot finish before the deadline is reported as interrupted rather than averaged
+selectively. The report includes certified distinct fills found, the arithmetic estimate expressed
+as both a count and slack bits, a confidence interval, accepted walks, effective sample size, and
+measured overhead. Zero accepted samples are reported as insufficient evidence, never as zero
+variants.
 
 `--blocklist` takes a file of words that may never appear in a fill, one per line, with `#`
 starting a comment. Matching is exact after the same normalization applied to the word lists, so
@@ -115,6 +118,10 @@ Options:
           Absolute estimator time cap in seconds
       --estimate-seed <ESTIMATE_SEED>
           Random seed for variant-estimation walks [default: 0]
+      --estimate-walks <ESTIMATE_WALKS>
+          Fixed number of variant-estimation walks [default: 16]
+      --estimate-guide-probability <ESTIMATE_GUIDE_PROBABILITY>
+          Probability of following the incumbent value at each sampled decision [default: 0.98]
   -t, --time
           Print timing information along with the grid
   -h, --help

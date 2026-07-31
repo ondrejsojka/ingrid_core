@@ -1,7 +1,8 @@
 //! Adaptive multi-core search for fills that maximize preferred-tier words.
 
-use crate::backtracking_search::{find_fill_with_options, FillFailure, FillOptions, FillSuccess};
+use crate::backtracking_search::{find_fill_from_prepared, FillFailure, FillOptions, FillSuccess};
 use crate::grid_config::{Choice, GridConfig};
+pub use crate::live_state::PreparedSearch;
 use crate::word_list::WordTier;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -273,25 +274,116 @@ pub fn find_best_fill(
     timeout: Option<Duration>,
     worker_count: Option<usize>,
 ) -> Result<PreferredFillSuccess, FillFailure> {
-    find_best_fill_internal(config, timeout, worker_count, None)
+    let start = Instant::now();
+    let prepared = prepare_search(config)?;
+    let remaining = timeout.map(|timeout| timeout.saturating_sub(start.elapsed()));
+    if timeout.is_some() && remaining == Some(Duration::ZERO) {
+        return Err(FillFailure::Timeout);
+    }
+    find_best_fill_prepared(config, &prepared, remaining, worker_count)
+}
+
+/// Establish initial arc consistency once for search workers and optional post-search analysis.
+pub fn prepare_search(config: &GridConfig) -> Result<PreparedSearch, FillFailure> {
+    PreparedSearch::new(config)
+}
+
+/// Search from an existing prepared root state.
+pub fn find_best_fill_prepared(
+    config: &GridConfig,
+    prepared: &PreparedSearch,
+    timeout: Option<Duration>,
+    worker_count: Option<usize>,
+) -> Result<PreferredFillSuccess, FillFailure> {
+    find_best_fill_internal(config, prepared, timeout, worker_count, None)
+}
+
+fn emit_early_return(
+    config: &GridConfig,
+    start: Instant,
+    observer: &mut impl FnMut(SearchEvent),
+    failure: FillFailure,
+) -> Result<PreferredFillSuccess, FillFailure> {
+    let (kind, result, impossible_from) = match &failure {
+        FillFailure::HardFailure => (
+            SearchEventKind::HardFailure,
+            SearchEventResult::HardFailure,
+            0,
+        ),
+        FillFailure::Timeout => (
+            SearchEventKind::Timeout,
+            SearchEventResult::Timeout,
+            maximum_preferred_words(config) + 1,
+        ),
+        FillFailure::Abort => (
+            SearchEventKind::Abort,
+            SearchEventResult::Abort,
+            maximum_preferred_words(config) + 1,
+        ),
+        FillFailure::ExceededBacktrackLimit(_) => {
+            unreachable!("initial search preparation has no backtrack limit")
+        }
+    };
+    let fixed_preferred_word_count = fixed_preferred_word_count(config);
+    let details = EventDetails {
+        result: Some(result),
+        ..EventDetails::default()
+    };
+    observer(SearchEvent::new(
+        start.elapsed(),
+        kind,
+        0,
+        None,
+        impossible_from,
+        fixed_preferred_word_count,
+        details,
+    ));
+    observer(SearchEvent::new(
+        start.elapsed(),
+        SearchEventKind::FinalReturn,
+        0,
+        None,
+        impossible_from,
+        fixed_preferred_word_count,
+        details,
+    ));
+    Err(failure)
 }
 
 /// Search like [`find_best_fill`], synchronously reporting scheduler transitions to `observer`.
-///
-/// Events are reported on the scheduler thread. The event representation contains only scalar
-/// values and does not allocate.
 pub fn find_best_fill_with_observer(
     config: &GridConfig,
     timeout: Option<Duration>,
     worker_count: Option<usize>,
     mut observer: impl FnMut(SearchEvent),
 ) -> Result<PreferredFillSuccess, FillFailure> {
-    find_best_fill_internal(config, timeout, worker_count, Some(&mut observer))
+    let start = Instant::now();
+    let prepared = match prepare_search(config) {
+        Ok(prepared) => prepared,
+        Err(failure) => return emit_early_return(config, start, &mut observer, failure),
+    };
+    let remaining = timeout.map(|timeout| timeout.saturating_sub(start.elapsed()));
+    if timeout.is_some() && remaining == Some(Duration::ZERO) {
+        return emit_early_return(config, start, &mut observer, FillFailure::Timeout);
+    }
+    find_best_fill_prepared_with_observer(config, &prepared, remaining, worker_count, &mut observer)
+}
+
+/// Search from a prepared root while reporting scheduler transitions.
+pub fn find_best_fill_prepared_with_observer(
+    config: &GridConfig,
+    prepared: &PreparedSearch,
+    timeout: Option<Duration>,
+    worker_count: Option<usize>,
+    mut observer: impl FnMut(SearchEvent),
+) -> Result<PreferredFillSuccess, FillFailure> {
+    find_best_fill_internal(config, prepared, timeout, worker_count, Some(&mut observer))
 }
 
 #[allow(clippy::too_many_lines)]
 fn find_best_fill_internal(
     config: &GridConfig,
+    prepared: &PreparedSearch,
     timeout: Option<Duration>,
     worker_count: Option<usize>,
     mut observer: Option<&mut dyn FnMut(SearchEvent)>,
@@ -404,12 +496,13 @@ fn find_best_fill_internal(
                     );
 
                     let sender = sender.clone();
-                    let worker_timeout =
-                        deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
                     scope.spawn(move || {
-                        let result = find_fill_with_options(
+                        let worker_start = Instant::now();
+                        let result = find_fill_from_prepared(
                             config,
-                            worker_timeout,
+                            prepared,
+                            worker_start,
+                            deadline,
                             None,
                             FillOptions {
                                 minimum_preferred_words: target,
@@ -848,19 +941,15 @@ mod tests {
         assert!(matches!(result, Err(FillFailure::HardFailure)));
         assert_eq!(
             events.iter().map(|event| event.kind).collect::<Vec<_>>(),
-            vec![
-                SearchEventKind::WorkerStart,
-                SearchEventKind::HardFailure,
-                SearchEventKind::FinalReturn,
-            ]
+            vec![SearchEventKind::HardFailure, SearchEventKind::FinalReturn]
         );
-        assert_eq!(events[1].worker_id, Some(0));
-        assert_eq!(events[1].target, Some(0));
-        assert_eq!(events[1].active_worker_count, 0);
-        assert_eq!(events[1].impossible_from, 0);
-        assert_eq!(events[1].states, None);
+        assert_eq!(events[0].worker_id, None);
+        assert_eq!(events[0].target, None);
+        assert_eq!(events[0].active_worker_count, 0);
+        assert_eq!(events[0].impossible_from, 0);
+        assert_eq!(events[0].states, None);
+        assert_eq!(events[0].result, Some(SearchEventResult::HardFailure));
         assert_eq!(events[1].result, Some(SearchEventResult::HardFailure));
-        assert_eq!(events[2].result, Some(SearchEventResult::HardFailure));
     }
 
     #[test]
