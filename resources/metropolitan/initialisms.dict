@@ -1,0 +1,39 @@
+# Initialisms: kept in the Preferred tier, never inflected. Passed to
+# theme_expand.py --literal, which exempts them from generation. MUNI, VUT and JAMU
+# all have MorfFlex paradigms, so without this MUNI declines to MUNU.
+bvv;260
+ceitec;260
+dpmb;260
+ičo;220
+ids;260
+jamu;260
+mhd;260
+mmb;260
+moú;260
+muni;260
+mzlu;260
+paro;260
+psč;220
+sako;220
+tic;260
+vida;240
+vut;260
+zuš;240
+ztp;220
+úmč;240
+# Lexicalised idiom forms (CLUES.md sec. 8, IDIOM hook). They live in one fixed
+# shape inside a set phrase -- "a je to v cudu", "konec, slus" -- so the rest of the
+# paradigm is not Czech anyone says.
+brna;260
+čudu;260
+eště;220
+fuč;240
+šlus;240
+štatl;260
+# Street names that do not decline in use, or that lemmatise to the wrong place.
+# "na Orli", "na Veveri" are fixed; Lisen analyses to both Lisen_;G and Lisno_;G, and
+# generating from the second produces `lisna`, which is a different village.
+orlí;240
+veveří;240
+líšeň;240
+líšně;240
