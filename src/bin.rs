@@ -2,9 +2,10 @@ use clap::Parser;
 use ingrid_core::backtracking_search::FillFailure;
 use ingrid_core::grid_config::{generate_grid_config_from_template_string, render_grid};
 use ingrid_core::parallel_search::{
-    find_best_fill_prepared, find_best_fill_prepared_with_observer, prepare_search, SearchEvent,
-    SearchEventKind, SearchEventResult,
+    find_best_fill, find_best_fill_with_observer, prepare_search, SearchEvent, SearchEventKind,
+    SearchEventResult,
 };
+
 use ingrid_core::variant_estimate::{
     estimate_variants, InconclusiveReason, SamplingDiagnostics, VariantEstimate,
     VariantEstimateOptions, VariantEstimateOutcome,
@@ -240,8 +241,8 @@ fn print_variant_estimate(estimate: &VariantEstimate) {
         VariantEstimateOutcome::Inconclusive { reason, sampling } => {
             let reason = match reason {
                 InconclusiveReason::InvalidOptions => "invalid options",
+                InconclusiveReason::InvalidIncumbent => "invalid incumbent",
                 InconclusiveReason::InsufficientBudget => "insufficient budget",
-                InconclusiveReason::Interrupted => "fixed cohort interrupted",
                 InconclusiveReason::InsufficientEvidence => "insufficient evidence",
             };
             eprintln!("estimate: {reason}");
@@ -403,7 +404,7 @@ fn main() -> Result<(), Error> {
             ))
         })?;
         let mut search_log_error = None;
-        let result = find_best_fill_prepared_with_observer(
+        let result = find_best_fill_with_observer(
             &config_ref,
             &prepared,
             remaining_timeout,
@@ -424,7 +425,7 @@ fn main() -> Result<(), Error> {
         }
         result
     } else {
-        find_best_fill_prepared(
+        find_best_fill(
             &config_ref,
             &prepared,
             remaining_timeout,
@@ -444,7 +445,7 @@ fn main() -> Result<(), Error> {
 
     if args.estimate_variants {
         let estimate_options = VariantEstimateOptions {
-            runtime_ratio: args.estimate_runtime_ratio.min(0.5),
+            runtime_ratio: args.estimate_runtime_ratio,
             worker_count,
             walk_count: args.estimate_walks,
             rng_seed: args.seed,

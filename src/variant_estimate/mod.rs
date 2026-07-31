@@ -7,25 +7,22 @@
 mod aggregate;
 mod walk;
 
-use std::collections::BTreeSet;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::fill_set::DistinctFillSet;
 use crate::grid_config::GridConfig;
 use crate::live_state::LiveSearchState;
 use crate::parallel_search::{canonical_fill_key, PreferredFillSuccess, PreparedSearch};
-use crate::types::WordId;
 
 use self::aggregate::{retain_known_fills, summarize, Summary};
-use self::walk::{collect_walks, RankProposal, SampleBatch};
+use self::walk::{collect_walks, RankProposal, WalkOutcome};
 
 const DEFAULT_WALK_COUNT: usize = 16;
 const MAX_WALK_COUNT: usize = 100_000;
-const MAX_KNOWN_FILLS: usize = 100_000;
 const MINIMUM_EFFECTIVE_SAMPLES: f64 = 1.0;
 const MINIMUM_USEFUL_BUDGET: Duration = Duration::from_millis(20);
 const DEADLINE_FRACTION: f64 = 0.9;
-const CALIBRATION_WALK_COUNT: usize = 1;
 /// Incumbent-path calibration underestimates mixed-proposal walk cost; factor in the bias.
 const COHORT_SAFETY_FACTOR: f64 = 0.5;
 const CALIBRATION_SEED_NAMESPACE: u64 = 0x4341_4c49_4252_4154; // "CALIBRAT"
@@ -73,8 +70,9 @@ pub struct SamplingDiagnostics {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum InconclusiveReason {
     InvalidOptions,
+    /// The incumbent's choices are not one complete slot-indexed assignment.
+    InvalidIncumbent,
     InsufficientBudget,
-    Interrupted,
     InsufficientEvidence,
 }
 
@@ -124,157 +122,107 @@ pub fn estimate_variants(
 ) -> VariantEstimate {
     let start = Instant::now();
     let minimum_preferred_words = incumbent.preferred_word_count;
-    let mut known_fills: BTreeSet<Box<[WordId]>> = incumbent
+    let mut known_fills: DistinctFillSet = incumbent
         .certified_fills
         .iter()
         .filter(|fill| fill.len() == config.slot_configs.len())
         .cloned()
         .collect();
-    let Some(incumbent_words) = canonical_fill_key(config, &incumbent.fill.choices) else {
-        return finish(
-            minimum_preferred_words,
-            &known_fills,
-            incumbent.certified_fills_capped,
-            start,
-            search_elapsed,
-            VariantEstimateOutcome::Inconclusive {
+
+    // Every branch — invalid inputs, exact answers, budget shortfalls, and the sampling path —
+    // computes only its outcome; the shared report tail runs exactly once below.
+    let outcome = (|| {
+        let Some(incumbent_words) = canonical_fill_key(config, &incumbent.fill.choices) else {
+            return VariantEstimateOutcome::Inconclusive {
+                reason: InconclusiveReason::InvalidIncumbent,
+                sampling: None,
+            };
+        };
+
+        if !valid_options(options) {
+            return VariantEstimateOutcome::Inconclusive {
                 reason: InconclusiveReason::InvalidOptions,
                 sampling: None,
-            },
-        );
-    };
-    known_fills.insert(incumbent_words.clone());
-
-    if !valid_options(options) {
-        return finish(
-            minimum_preferred_words,
-            &known_fills,
-            incumbent.certified_fills_capped,
-            start,
-            search_elapsed,
-            VariantEstimateOutcome::Inconclusive {
-                reason: InconclusiveReason::InvalidOptions,
-                sampling: None,
-            },
-        );
-    }
-
-    let allowed = estimator_budget(search_elapsed, options);
-    if allowed < MINIMUM_USEFUL_BUDGET || options.walk_count == 0 {
-        return finish(
-            minimum_preferred_words,
-            &known_fills,
-            incumbent.certified_fills_capped,
-            start,
-            search_elapsed,
-            VariantEstimateOutcome::Inconclusive {
+            };
+        }
+        let allowed = estimator_budget(search_elapsed, options);
+        if allowed < MINIMUM_USEFUL_BUDGET || options.walk_count == 0 {
+            return VariantEstimateOutcome::Inconclusive {
                 reason: InconclusiveReason::InsufficientBudget,
                 sampling: None,
-            },
-        );
-    }
-    let deadline = start + allowed.mul_f64(DEADLINE_FRACTION);
+            };
+        }
+        let deadline = start + allowed.mul_f64(DEADLINE_FRACTION);
 
-    if let Some(count) = exact_root_count(config, prepared, minimum_preferred_words) {
-        return finish(
-            minimum_preferred_words,
-            &known_fills,
-            incumbent.certified_fills_capped,
-            start,
-            search_elapsed,
-            VariantEstimateOutcome::Exact { count },
-        );
-    }
-    if Instant::now() >= deadline {
-        return finish(
-            minimum_preferred_words,
-            &known_fills,
-            incumbent.certified_fills_capped,
-            start,
-            search_elapsed,
-            VariantEstimateOutcome::Inconclusive {
+        if let Some(count) = exact_root_count(config, prepared, minimum_preferred_words) {
+            return VariantEstimateOutcome::Exact { count };
+        }
+        if Instant::now() >= deadline {
+            return VariantEstimateOutcome::Inconclusive {
                 reason: InconclusiveReason::InsufficientBudget,
                 sampling: None,
-            },
-        );
-    }
+            };
+        }
 
-    let maximum_option_count = config.slot_options.iter().map(Vec::len).max().unwrap_or(0);
-    let proposal = RankProposal::new(maximum_option_count, options.guide_probability);
-    let calibration_proposal = RankProposal::new(maximum_option_count, 1.0);
-    let worker_count = resolve_worker_count(options.worker_count);
-    let calibration_walk_count = options
-        .walk_count
-        .min(worker_count)
-        .min(CALIBRATION_WALK_COUNT);
-    let calibration_start = Instant::now();
-    let calibration = collect_walks(
-        config,
-        &prepared.root,
-        minimum_preferred_words,
-        &incumbent_words,
-        &calibration_proposal,
-        worker_count,
-        calibration_walk_count,
-        options.rng_seed,
-        CALIBRATION_SEED_NAMESPACE,
-        Some(deadline),
-    );
-    let calibration_elapsed = calibration_start.elapsed();
-    let cohort_walk_count = select_cohort_size(
-        calibration.outcomes.len(),
-        calibration_elapsed,
-        deadline.saturating_duration_since(Instant::now()),
-        options.walk_count,
-    );
-    if cohort_walk_count == 0 {
-        return finish(
+        let maximum_option_count = config.slot_options.iter().map(Vec::len).max().unwrap_or(0);
+        let proposal = RankProposal::new(maximum_option_count, options.guide_probability);
+        let calibration_proposal = RankProposal::new(maximum_option_count, 1.0);
+        let worker_count = resolve_worker_count(options.worker_count);
+        let calibration_start = Instant::now();
+        let calibration = collect_walks(
+            config,
+            &prepared.root,
             minimum_preferred_words,
-            &known_fills,
-            incumbent.certified_fills_capped,
-            start,
-            search_elapsed,
-            VariantEstimateOutcome::Inconclusive {
+            &incumbent_words,
+            &calibration_proposal,
+            worker_count,
+            1,
+            options.rng_seed,
+            CALIBRATION_SEED_NAMESPACE,
+            Some(deadline),
+        );
+        let calibration_elapsed = calibration_start.elapsed();
+        let cohort_walk_count = select_cohort_size(
+            calibration.len(),
+            calibration_elapsed,
+            deadline.saturating_duration_since(Instant::now()),
+            options.walk_count,
+        );
+        if cohort_walk_count == 0 {
+            return VariantEstimateOutcome::Inconclusive {
                 reason: InconclusiveReason::InsufficientBudget,
                 sampling: None,
-            },
+            };
+        }
+
+        let batch = collect_walks(
+            config,
+            &prepared.root,
+            minimum_preferred_words,
+            &incumbent_words,
+            &proposal,
+            worker_count,
+            cohort_walk_count,
+            options.rng_seed,
+            COHORT_SEED_NAMESPACE,
+            None,
         );
-    }
-    let batch = collect_walks(
-        config,
-        &prepared.root,
-        minimum_preferred_words,
-        &incumbent_words,
-        &proposal,
-        worker_count,
-        cohort_walk_count,
-        options.rng_seed,
-        COHORT_SEED_NAMESPACE,
-        None,
-    );
-    let sampled_fills_capped =
-        retain_known_fills(&batch.outcomes, &mut known_fills, MAX_KNOWN_FILLS);
-    let known_distinct_fills_capped = incumbent.certified_fills_capped || sampled_fills_capped;
-    let outcome = cohort_outcome(&batch, known_fills.len());
+        retain_known_fills(&batch, &mut known_fills);
+        cohort_outcome(&batch, known_fills.len())
+    })();
+
     finish(
         minimum_preferred_words,
         &known_fills,
-        known_distinct_fills_capped,
         start,
         search_elapsed,
         outcome,
     )
 }
 
-fn cohort_outcome(batch: &SampleBatch, known_lower_bound: usize) -> VariantEstimateOutcome {
-    let summary = summarize(&batch.outcomes);
+fn cohort_outcome(batch: &[WalkOutcome], known_lower_bound: usize) -> VariantEstimateOutcome {
+    let summary = summarize(batch);
     let sampling = summary.diagnostics();
-    if !batch.complete {
-        return VariantEstimateOutcome::Inconclusive {
-            reason: InconclusiveReason::Interrupted,
-            sampling: Some(sampling),
-        };
-    }
     match summary.estimate(known_lower_bound, MINIMUM_EFFECTIVE_SAMPLES) {
         Some(Summary {
             count,
@@ -362,8 +310,7 @@ fn resolve_worker_count(requested: Option<usize>) -> usize {
 
 fn finish(
     minimum_preferred_words: usize,
-    known_fills: &BTreeSet<Box<[WordId]>>,
-    known_distinct_fills_capped: bool,
+    known_fills: &DistinctFillSet,
     start: Instant,
     search_elapsed: Duration,
     outcome: VariantEstimateOutcome,
@@ -372,7 +319,7 @@ fn finish(
     VariantEstimate {
         minimum_preferred_words,
         known_distinct_fills: known_fills.len(),
-        known_distinct_fills_capped,
+        known_distinct_fills_capped: known_fills.capped(),
         elapsed,
         search_runtime_ratio: duration_ratio(elapsed, search_elapsed),
         outcome,

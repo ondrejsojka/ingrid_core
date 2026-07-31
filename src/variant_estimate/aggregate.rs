@@ -1,9 +1,6 @@
-use std::collections::BTreeSet;
-
-use crate::types::WordId;
-
 use super::walk::WalkOutcome;
 use super::SamplingDiagnostics;
+use crate::fill_set::DistinctFillSet;
 
 pub(super) struct Summary {
     pub(super) count: f64,
@@ -90,23 +87,13 @@ pub(super) fn summarize(outcomes: &[WalkOutcome]) -> CohortStatistics {
     }
 }
 
-pub(super) fn retain_known_fills(
-    outcomes: &[WalkOutcome],
-    known_fills: &mut BTreeSet<Box<[WordId]>>,
-    maximum_known_fills: usize,
-) -> bool {
-    let mut capped = false;
+pub(super) fn retain_known_fills(outcomes: &[WalkOutcome], known_fills: &mut DistinctFillSet) {
     for outcome in outcomes {
         let WalkOutcome::Accepted { fill, .. } = outcome else {
             continue;
         };
-        if known_fills.len() < maximum_known_fills {
-            known_fills.insert(fill.clone());
-        } else if !known_fills.contains(fill) {
-            capped = true;
-        }
+        known_fills.insert(fill.clone());
     }
-    capped
 }
 
 fn log2_sum_exp_scaled(outcomes: &[WalkOutcome], scale: f64) -> f64 {

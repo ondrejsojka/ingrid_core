@@ -1,13 +1,13 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::time::Duration;
 
-use super::aggregate::retain_known_fills;
-use super::walk::{collect_walks, RankProposal, SampleBatch, WalkOutcome};
+use super::walk::{collect_walks, RankProposal, WalkOutcome};
 use super::{
     estimate_variants, estimator_budget, select_cohort_size, InconclusiveReason,
     VariantEstimateOptions, VariantEstimateOutcome,
 };
 use crate::backtracking_search::{FillSuccess, Statistics};
+use crate::fill_set::DistinctFillSet;
 use crate::grid_config::{
     generate_grid_config_from_template_string, Choice, GridConfig, OwnedGridConfig,
 };
@@ -75,8 +75,7 @@ fn incumbent(choices: Vec<Choice>, preferred_word_count: usize) -> PreferredFill
         },
         preferred_word_count,
         fixed_preferred_word_count: 0,
-        certified_fills: BTreeSet::from([fill_key]),
-        certified_fills_capped: false,
+        certified_fills: DistinctFillSet::with_fill(fill_key),
     }
 }
 
@@ -98,7 +97,7 @@ fn fixed_cohort(
     walk_count: usize,
     seed: u64,
     worker_count: usize,
-) -> SampleBatch {
+) -> Vec<WalkOutcome> {
     let incumbent_words =
         canonical_fill_key(config, &incumbent.fill.choices).expect("complete incumbent");
     let proposal = RankProposal::new(
@@ -117,7 +116,7 @@ fn fixed_cohort(
         super::COHORT_SEED_NAMESPACE,
         None,
     );
-    assert!(batch.complete);
+    assert_eq!(batch.len(), walk_count);
     batch
 }
 
@@ -291,27 +290,6 @@ fn fixed_seed_is_reproducible_across_worker_counts() {
         }
         _ => panic!("both fixed cohorts should produce estimates"),
     }
-}
-
-#[test]
-fn interrupted_cohort_retains_certified_sampled_fills() {
-    let batch = SampleBatch {
-        outcomes: vec![WalkOutcome::Accepted {
-            log2_weight: 1.0,
-            fill: vec![1, 2].into_boxed_slice(),
-        }],
-        complete: false,
-    };
-    let mut known_fills = BTreeSet::from([vec![3, 4].into_boxed_slice()]);
-    assert!(!retain_known_fills(&batch.outcomes, &mut known_fills, 100));
-    assert_eq!(known_fills.len(), 2);
-    assert!(matches!(
-        super::cohort_outcome(&batch, 1),
-        VariantEstimateOutcome::Inconclusive {
-            reason: InconclusiveReason::Interrupted,
-            ..
-        }
-    ));
 }
 
 #[test]

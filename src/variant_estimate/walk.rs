@@ -20,11 +20,6 @@ pub(super) enum WalkOutcome {
     Rejected,
 }
 
-pub(super) struct SampleBatch {
-    pub(super) outcomes: Vec<WalkOutcome>,
-    pub(super) complete: bool,
-}
-
 struct IndexedOutcome {
     index: usize,
     outcome: WalkOutcome,
@@ -101,12 +96,9 @@ pub(super) fn collect_walks(
     rng_seed: u64,
     seed_namespace: u64,
     deadline: Option<Instant>,
-) -> SampleBatch {
+) -> Vec<WalkOutcome> {
     if walk_limit == 0 {
-        return SampleBatch {
-            outcomes: Vec::new(),
-            complete: true,
-        };
+        return Vec::new();
     }
     let worker_count = worker_count.min(walk_limit);
     let next_index = AtomicUsize::new(0);
@@ -159,14 +151,12 @@ pub(super) fn collect_walks(
         for mut batch in receiver {
             outcomes.append(&mut batch);
         }
+        // Restore walk-index order so aggregation is deterministic and seed reproducibility
+        // holds across worker counts.
         outcomes.sort_unstable_by_key(|outcome| outcome.index);
         outcomes
     });
-    let complete = outcomes.len() == walk_limit;
-    SampleBatch {
-        outcomes: outcomes.drain(..).map(|indexed| indexed.outcome).collect(),
-        complete,
-    }
+    outcomes.drain(..).map(|indexed| indexed.outcome).collect()
 }
 
 fn run_walk(
