@@ -128,6 +128,11 @@ pub fn estimate_variants(
         .filter(|fill| fill.len() == config.slot_configs.len())
         .cloned()
         .collect();
+    // The rebuilt set only learns about insertions past the cap; the search's own marker
+    // would otherwise be silently dropped.
+    if incumbent.certified_fills.capped() {
+        known_fills.mark_capped();
+    }
 
     // Every branch — invalid inputs, exact answers, budget shortfalls, and the sampling path —
     // computes only its outcome; the shared report tail runs exactly once below.

@@ -45,6 +45,12 @@ impl DistinctFillSet {
         self.capped
     }
 
+    /// Mark that evidence was dropped elsewhere, e.g. when this set was rebuilt from another
+    /// capped set and only the marker needs to carry over.
+    pub fn mark_capped(&mut self) {
+        self.capped = true;
+    }
+
     pub fn len(&self) -> usize {
         self.fills.len()
     }
@@ -65,5 +71,43 @@ impl FromIterator<Box<[WordId]>> for DistinctFillSet {
             set.insert(fill);
         }
         set
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DistinctFillSet, MAX_DISTINCT_FILLS};
+
+    #[test]
+    fn deduplicates_identical_fills_without_capping() {
+        let mut set = DistinctFillSet::new();
+        set.insert(vec![1, 2].into_boxed_slice());
+        set.insert(vec![1, 2].into_boxed_slice());
+        set.insert(vec![1, 3].into_boxed_slice());
+        assert_eq!(set.len(), 2);
+        assert!(!set.capped());
+    }
+
+    #[test]
+    fn insertion_past_the_cap_marks_the_set_capped() {
+        let mut set = DistinctFillSet::new();
+        for index in 0..=MAX_DISTINCT_FILLS {
+            set.insert(vec![index].into_boxed_slice());
+        }
+        assert_eq!(set.len(), MAX_DISTINCT_FILLS);
+        assert!(set.capped());
+    }
+
+    #[test]
+    fn cap_ignores_duplicates_of_retained_fills() {
+        let mut set = DistinctFillSet::new();
+        for index in 0..MAX_DISTINCT_FILLS {
+            set.insert(vec![index].into_boxed_slice());
+        }
+        // Duplicates of already-retained fills are not dropped evidence.
+        set.insert(vec![0].into_boxed_slice());
+        assert!(!set.capped());
+        set.insert(vec![MAX_DISTINCT_FILLS].into_boxed_slice());
+        assert!(set.capped());
     }
 }

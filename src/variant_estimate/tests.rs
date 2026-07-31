@@ -336,6 +336,46 @@ fn canonical_search_evidence_survives_without_sampling() {
 }
 
 #[test]
+fn capped_certified_evidence_marks_the_estimate_capped() {
+    // The certified-evidence marker must survive the estimator rebuilding its known-fill set,
+    // even when the budget gate stops the estimator before any walk runs.
+    let config =
+        generate_grid_config_from_template_string(word_list(&["cat"], &["dog"]), "...#...\n", 0);
+    let config_ref = config.to_config_ref();
+    let mut result = incumbent(
+        vec![
+            Choice {
+                slot_id: 0,
+                word_id: word_id(&config, "cat"),
+            },
+            Choice {
+                slot_id: 1,
+                word_id: word_id(&config, "dog"),
+            },
+        ],
+        0,
+    );
+    result.certified_fills.mark_capped();
+    let mut configured = options(16, 4);
+    configured.runtime_ratio = 0.0;
+    let estimate = estimate_variants(
+        &config_ref,
+        &prepare_search(&config_ref).unwrap(),
+        &result,
+        Duration::from_secs(1),
+        &configured,
+    );
+    assert!(matches!(
+        estimate.outcome,
+        VariantEstimateOutcome::Inconclusive {
+            reason: InconclusiveReason::InsufficientBudget,
+            ..
+        }
+    ));
+    assert!(estimate.known_distinct_fills_capped);
+}
+
+#[test]
 fn canonical_fill_key_rejects_duplicate_or_missing_slots() {
     let config =
         generate_grid_config_from_template_string(word_list(&["cat"], &["dog"]), "...#...\n", 0);
