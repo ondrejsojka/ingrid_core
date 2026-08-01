@@ -193,6 +193,32 @@ $ python3 scripts/czech_standard_dict.py \
     --denylist resources/blocklist_cs.txt
 ```
 
+#### Čapek literary supplement
+
+To allow every alphabetic word-form attested in Karel Čapek's sole-authorship
+corpus, export the complete **word-form frequency** list from
+[ČNK KonText's `capek` corpus](https://wiki.korpus.cz/doku.php/cnk:capek) as
+plain text (use **Save → Custom** to avoid its 50-row default). The frequency
+is intentionally not used: corpus attestation supplies a flat score of 30.
+Use `capek`, not `capek_uplny`.
+
+```
+$ python3 scripts/capek_to_dict.py \
+    --input local/capek-word-forms.txt \
+    --output local/capek.dict \
+    --source-note local/capek.SOURCE.txt \
+    --denylist resources/blocklist_cs.txt
+$ cat local/cstenten-canonical-bias.dict local/capek.dict \
+    > local/cstenten-plus-capek.dict
+```
+
+The CSTenTen dictionary MUST come first. Ingrid keeps the first normalized
+duplicate, so its established score wins and Čapek contributes only
+previously-unlisted forms. Use `local/cstenten-plus-capek.dict` in place of
+`local/cstenten-canonical-bias.dict` in the search command below. Keep
+`--blocklist` in that command: it is the final enforcement step for every
+source.
+
 By default, the Standard filter keeps analyzed noun, adjective, verb, and
 adverb forms, excludes entries whose only analyses are foreign/unknown, and
 retains noncanonical inflections. Use `--exclude-vocatives`,
