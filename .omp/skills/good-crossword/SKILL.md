@@ -1,19 +1,26 @@
 ---
 name: good-crossword
-description: Notes on generating a recognizably publication-tailored Czech crossword with ingrid_core — which knobs actually move theme density, what changes when the publication is defined by a topic rather than a place, how to build a švédská instead of an American grid, sane defaults, the traps that ate a day, and what to try next. Use when tuning a fill, building a theme wordlist for a publication, choosing a grid or grid genre, seeding theme entries, judging whether a fill is good, or reading a slack estimate.
+description: Notes on generating a recognizably publication-tailored Czech crossword with ingrid_core — which knobs actually move theme density, what changes when the publication is defined by a topic or by a person rather than a place, when to build the template around the theme words instead of filling one, how to build a švédská instead of an American grid, sane defaults, the traps that ate a day, and what to try next. Use when tuning a fill, building a theme wordlist for a publication, choosing a grid or grid genre, seeding theme entries, judging whether a fill is good, or reading a slack estimate.
 ---
 
 # Making a crossword that reads like it belongs to the magazine
 
-Status: working notes, not a spec. Two titles now: **Brnensky Metropolitan 7-8/2026**
-(city magazine, American grid) and **LFŠ / Letní filmová škola 2026** (film festival
-daily, švédská). Numbers are real but each was measured once. Treat the causal claims as
-"this is what happened when I pulled the lever", not as laws. Long versions with raw runs:
-`theme-density.md` (Metropolitan) and `lfs-notes.md` (LFŠ) in the repo root.
+Status: working notes, not a spec. Three titles now: **Brnensky Metropolitan 7-8/2026**
+(city magazine, American grid), **LFŠ / Letní filmová škola 2026** (film festival daily,
+švédská) and **Karolína 2026** (a birthday puzzle for one reader, švédská). Numbers are
+real but each was measured once. Treat the causal claims as "this is what happened when I
+pulled the lever", not as laws. Long versions with raw runs: `theme-density.md`
+(Metropolitan) and `lfs-notes.md` (LFŠ) in the repo root; the third title's artifacts are
+under `local/karolina/`.
 
 The single most useful thing the second title taught: **decide what kind of publication
 you have before you touch a gate.** Sec. "Place titles vs topic titles" below. Almost
 everything that failed to transfer failed there.
+
+The third title moved the decision one level up. **Before choosing gates, decide whether
+you are filling a template or building one.** With a small theme vocabulary the Preferred
+tier cannot win against a fixed topology no matter how well graded it is, and the whole
+gate apparatus above is beside the point. Sec. "Person titles" below.
 
 Read `CLUES.md` before writing any clue. That is the editorial spec and it is better
 thought-through than anything here.
@@ -53,9 +60,11 @@ class at its source, and both are small:
 
 ## Rough workflow
 
-0. **Classify the publication and the grid genre.** Place-defined or topic-defined?
-   American or švédská? Both answers change gates and grid constraints downstream, and
-   both are cheap to get wrong for a whole day. Two sections below.
+0. **Classify the publication and the grid genre.** Place-defined, topic-defined or
+   person-defined? American or švédská? Both answers change gates and grid constraints
+   downstream, and both are cheap to get wrong for a whole day. Three sections below.
+   If the theme list is finite and pre-clued (a person title), **stop here and jump to
+   the "Person titles" section** — steps 1-4 do not apply and step 5 inverts.
 1. Extract theme candidates from the issue/archive — `metropolitan_theme_dict.py`.
    Corpus work, no taste involved. Set `--min-length 3`, see below.
 2. **Grade** them for recognizability — `theme_tier.py` for the mined channel,
@@ -75,7 +84,8 @@ class at its source, and both are small:
 
 Steps 0, 2 and 5 are where the wins are. Steps 6 and 8 are new and both earned their
 place. Step 3 is necessary and not sufficient. Step 1 is where most of the *candidates*
-come from and is the least interesting.
+come from and is the least interesting. On a person title, step 0 decides everything and
+the rest of the list collapses to 5-8-10-11 with step 5 replaced by `theme_grid.py`.
 
 ## Place titles vs topic titles — decide this first
 
@@ -132,6 +142,206 @@ list is now **data** (`resources/<pub>/curated.tsv`), each row carries an eviden
 and the build **fails** if a row does not match the corpus. 193 rows for LFŠ, zero
 unattested. Keeping this honest is what stops a model from quietly inventing vocabulary
 that "feels" like the publication.
+
+## Person titles — when the theme list is finite, build the template, don't fill one
+
+The third title is a birthday puzzle for one reader. The "publication" is a person, the
+theme list arrived hand-written as `word<TAB>clue`, 81 rows / 79 unique forms, and **every
+entry already had its clue**. So steps 1-4 of the workflow above — mine, grade, expand,
+fact-bank — all evaporate. There is nothing to mine, grading is what the author already
+did by writing the list, and **expansion is impossible on principle**: each clue is bound
+to its exact surface form, so `theme_expand.py` would produce forms with no clue attached.
+
+That leaves placement, and placement turns out to be the whole game.
+
+### The arithmetic that forces the inversion
+
+`parallel_search` maximizes `count_preferred_words` over a **fixed** topology. LFŠ got
+5 hits in 50 slots from **1 240** preferred forms. Scaling that down to 79 forms predicts
+roughly 2-4 hits in a normal švédská, which for a personal gift is a null result. No
+amount of tier grading fixes it, because the tier is already perfect — every single entry
+is maximally recognizable to the one reader who matters.
+
+So invert: **build the template around the theme words and let ingrid fill only what is
+left.** `scripts/theme_grid.py` does this — randomized greedy plus iterated local search
+over classic criss-cross placements, švédská legality enforced by construction (no word
+starts in row 0 or column 0; every other legend cell is a block automatically, and two
+words can never contend for the same legend in the same direction, so the renderer's
+conflict exit is unreachable by construction). Result on the same 79 words:
+
+| approach | theme entries in grid |
+|---|---:|
+| fixed švédská template + Preferred tier (the LFŠ recipe, extrapolated) | ~2-4 |
+| template built around the theme words | **79 / 79** |
+
+This is the "joint grid+theme search" item that had been sitting in Next steps as
+*Larger, and speculative*. The cheap version — greedy + ILS with a bitset unary screen —
+took an afternoon and saturates the word list. It is not speculative any more.
+
+### Theme count is very nearly linear in grid area
+
+This is the only lever that moves the number by more than one, and it moves it a lot.
+Pure-theme fills, matched budget (100 s, 8 workers, one component):
+
+| grid | 19² | 21² | 23² | 25² | 27² | 29² | 31² | 32² | 35² |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| theme entries placed | 37 | 44 | 50 | 57 | 64 | 71 | 78 | **79** | 79 |
+
+About **+3.4 entries per +1 of side length** over the whole range, then a hard ceiling at
+the size of the word list. Read it the other way round: *choose the grid by how much of
+the list you insist on shipping.* Wanting all 79 costs a 32×32; 27×27 buys 81 % of the
+list in a grid with 44 % of the area.
+
+That ceiling is a property of the packing, not of the search budget. Nine hundred seconds
+on nine workers at 31×31 — **10 532 restarts**, ~4× the budget that produced the 240 s
+column — still returns 77. The greedy+ILS neighbourhood is saturated well before the
+time is. So if you want all 79 in less area, the thing to improve is *crossings per word*
+(2.35 at 32×32), not seconds.
+
+κ is not the instrument here and does not apply — there is no dictionary-vs-topology
+tension to price when the "dictionary" for a slot is one specific word.
+
+### …and all of that evaporates the moment you cap empty cells
+
+The table above is what "maximize theme entries" gets you when nothing else is
+constrained, and it is worth reading as a cautionary result rather than a recipe. Ask an
+optimiser for theme count and it will spend *area* to buy it: the 32×32 grid that holds
+all 79 is 60 % empty, which is a word-search collage, not a crossword. The brief that
+followed — **15×15, at most 10 % empty cells (legend cells don't count as empty), at most
+80 % of answers thematic** — is the one that describes an actual puzzle, and under it the
+numbers collapse:
+
+| regime | grid | answers | theme | share | empty |
+|---|---|---:|---:|---:|---:|
+| unconstrained, template built around the words | 32×32 | 79 | **79** | 100 % | ~60 % |
+| 15×15, ≤10 % empty, ≤80 % theme | 15×15 | ~61 | **~6-8** | ~11 % | 9 % |
+
+An order of magnitude, from one geometry constraint. Things learned paying for it:
+
+- **The sparse criss-cross rule cannot reach 10 % empty, structurally.** "A non-crossing
+  cell has empty perpendicular neighbours" *manufactures* empty cells; the grids it makes
+  sit at 23-24 % empty and a dead-block-targeted repair pass only pushed that to 24 %.
+  Dense placement needs the general rule — a new cell may sit beside a word provided the
+  perpendicular run it induces is itself registered as an answer. I built that
+  (`dense_grid.py`) and then **deleted it**: even with the general rule it never got
+  under 23 %, because the constraint is a property of the block pattern and a word-first
+  construction cannot see it. Do not rebuild it; use the next point instead.
+- **Empty cells are a property of the block pattern, so fix the block pattern first.**
+  A block at `(r,c)` carries the across legend of `(r,c+1)` and the down legend of
+  `(r+1,c)`, so it is empty exactly when both are blocks or off-grid. That is a local,
+  cheap predicate: added to `swedish_grid.py` as `--max-empty` (energy penalty plus hard
+  feasibility), it goes from 23-31 empty cells per grid to 20-22 out of 225 without any
+  other change. Do not try to anneal it out of a word-first construction.
+- **`swedish_grid.py` was enforcing *fully checked*, which is American density, not
+  švédská density.** Every white cell had to belong to both an across and a down run of
+  `min_run`, because `run_lengths` reported length-1 runs and `min_run 3` then rejected
+  them. A real Czech švédská is full of unchecked cells and that slack is exactly what a
+  pinned theme entry needs. `--allow-unchecked` drops length-1 runs from the report while
+  still rejecting length-2 ones, and it moved κ from 0.78 to 0.75 on the same size.
+- **A unary screen is not a fillability oracle, and this is where it really hurts.**
+  Pinning theme entries into a fixed dense template with "every crossing slot keeps ≥1
+  candidate" gave 22 pinned entries and `Unfillable grid` every time. Tightening the
+  screen to "keeps ≥ N candidates" (`--min-domain`) trades pins for feasibility
+  monotonically — floor 1 → 14 pinned, unfillable; floor 200 → 5 pinned, fills — which is
+  a useful dial but still not a proof. The honest oracle is `ingrid_core`, and its cost
+  is dominated by **dictionary load** (~4 s for 160 k entries), not by search, since
+  `Unfillable` returns at initial AC. Pre-filter the wordlist to the fill bar once and
+  reuse that file for every oracle call.
+- **Distinguish reject-by-proof from reject-by-timeout — again.** `theme_construct.py`
+  defaults to a 12 s / 2-core oracle. On a 15×15 that needs ~90 s on nine cores, *every*
+  candidate came back "reject" and the run reported "nothing placeable", which reads
+  exactly like a proof and is not one. Size the oracle timeout against a measured bare
+  fill of the same template before believing a single rejection.
+- **The 80 % theme-share cap never bound.** Structural feasibility caps theme share
+  around 10-15 % in a dense 15×15, well under any editorial cap you would think to
+  impose. If a brief has both, the geometry is doing all the work.
+- **The wall this actually hit: density and filler quality are the same budget.** The
+  final constrained grid (15×15, 8.9 % empty, 61 answers, 4 long theme entries pinned by
+  `pin_long.py` plus 4 the solver found on its own = **8 theme, 13.1 % share**) is legal
+  and it fills — but only at `--min-score 33`, and **26 of its 53 filler answers (49 %)
+  score below 45**: `srz`, `htm`, `ámose`, `spu`, `inac`, `udelí`, `vedome`, `byvat`.
+  Re-filling the same grid at bar 45 (56 k entries) or 55 (26 k) returns `Unfillable
+  grid` outright. Twenty-two of the 53 filler slots are length 3, and a quality-gated
+  Czech tier simply does not have enough good 3-letter words to cover that many.
+  So on a 15×15 the empty-cell cap sets the answer count, the answer count sets the
+  short-slot count, and the short-slot count sets the minimum dictionary depth — which
+  then sets the filler quality you are forced to accept. Pick two of {small grid, few
+  empty cells, clean filler}. The lever nobody used yet is a **curated short-word list**:
+  a few hundred hand-picked, honestly clueable 3- and 4-letter Czech/Slovak entries would
+  move this more than anything else in this file.
+
+### Glue slots: screen at the bar you will fill at
+
+A pure-theme grid gives ingrid nothing to do. Leaving a bounded number of empty runs
+("glue") makes the grid denser and gives the theme words extra crossing anchors, and
+those runs are ingrid's job. Two traps, both paid for in full:
+
+- **Screen and fill at the same `--min-score`.** The constructor screens each glue run
+  with the same unary filter the solver applies first (does any word of that length match
+  the induced pattern). Screening at bar 21 and then filling at bar 33 → `Unfillable grid`
+  every time, because the screen certified patterns whose only matches were below the fill
+  bar. Screening *and* filling at 21 fills fine and produces `lkvb`, `uzv`, `mna`, `blá`,
+  `floka` — unclueable. Screening and filling both at **40** gave 12 filler words of which
+  11 took an honest clue. The bar is a single number used twice; letting the two copies
+  drift is the whole bug.
+- **The unary screen is necessary, not sufficient.** It does not know about the dupe index
+  or arc consistency, so a screened template can still come back `Unfillable`. That is
+  cheap to discover (initial AC returns instantly) but it means the screen is a filter,
+  not a proof — same lesson as "screen seeded templates with `ingrid_core`", one level
+  down.
+
+### Diacritics cost exactly one theme word
+
+Czech křížovky *do* print háčky and čárky, so folding is not on the table — but it is worth
+knowing the price, and it had never been measured. Matched arms (same seed, seconds,
+workers, size), folding only the theme list:
+
+| grid | diacritics kept | folded | Δ |
+|---|---:|---:|---:|
+| 21² | 43 | 44 | +1 |
+| 27² | 63 | 64 | +1 |
+
+One entry, plus ~6 crossings. I had expected folding to be worth several entries, since
+it merges `ě/e`, `ů/u`, `í/i` and enlarges every crossing domain. It does not, because at
+these sizes the binding constraint is **area, not letter compatibility** — the words are
+not failing to cross, they are failing to fit. Cheap constraint; stop worrying about it.
+
+### Everything downstream that changed
+
+- **`--dupe-exempt-preferred`** (new flag, `src/dupe_index.rs`). A personal list is *full*
+  of deliberate near-duplicates — `plán`/`plány`, `poké`/`pokebowl`/`slopbowl`,
+  `hliněná`/`hlinění`, `bablty`/`babltý`, `kůň`/`koně`/`kuoň` — each with its own joke and
+  its own clue. Previously the only way to let them coexist was to drop
+  `--max-shared-substring` entirely, which then let junk near-duplicates into the filler.
+  The flag exempts a shared-substring violation when **both** entries are preferred-tier;
+  whole-word duplicates stay forbidden. That is exactly the granularity this needs.
+- **Measure the clue budget before designing a hybrid.** The plan was švédská with an
+  American numbered overflow for long clues. The author's own clues turned out to run
+  max 32 characters, median 15 — inside the 34-character BOX budget of `CLUES.md` §2 — so
+  the hybrid was never needed. One `max(len(clue))` would have settled it in the first
+  minute.
+- **§9's band mix does not transfer to a private title, and that is the right answer.**
+  Honest labelling of the 79 clues gives S 19 % / O 13 % / H 68 % against a target of
+  45-50 / 15-25 / 30-35. Two thirds of the answers are friends, addresses and couple
+  slang whose only public definition *is* the in-joke, so `clue_check.py` reports FAIL on
+  the mix and on "no entry with all crossings in H". Do not relabel to hit the target —
+  record the deviation. The rules exist to guarantee a stranger can solve it; here there
+  is no stranger.
+- **Slovak is a cheap dictionary add.** `sktenten11.frqwl` through the same transform as
+  the Czech list (`score = round(10*log10(freq))`) merged 159 103 brand-new forms into a
+  595 086-entry standard tier and moved `d(L)/L` by +0.03 to +0.46, biggest at L3 and L7.
+  It carries no lemma bonus and no POS filter, though — there is no Slovak MorphoDiTa run
+  — so Slovak filler is *unscreened* in a way the Czech base is not. Raise the bar for
+  glue rather than trusting the score.
+- **The min-score landmine, third sighting.** Merged CS+SK minimum score is 21, so
+  `--min-score` above 21 silently discards 63 % of the dictionary. Every time a dictionary
+  is rebuilt, print its minimum score next to the fill command.
+- **A CSS trap worth one line, because it silently eats a third of the puzzle.** The grid
+  scroller used `display:flex; justify-content:center`. A centred flex item wider than its
+  scroll container overflows on *both* sides and the left overflow is unreachable —
+  `scrollWidth` (1437) came back smaller than the table (1473). Auto margins on the table
+  inside a plain block wrapper collapse to 0 when there is no spare room, so the grid
+  centres when it fits and scrolls fully when it does not.
 
 ## Švédská: match the publication's grid genre
 
@@ -226,6 +436,7 @@ Two more landmines in the same family:
 | knob | default I'd keep | why |
 |---|---|---|
 | `--max-shared-substring` | **4**, not 5 | 5 lets `luzanky` + `luzanek` coexist. 4 blocks that and cost nothing measurable. It still does **not** catch `opat`/`opatem` or `kope`/`kopali`, whose shared run is only 4. |
+| `--dupe-exempt-preferred` | **on** whenever the theme list contains deliberate near-duplicates | Exempts a shared-substring violation when *both* entries are preferred-tier, so `plán`/`plány` and `pokebowl`/`slopbowl` can share a grid while the filler still gets `--max-shared-substring 4`. Whole-word duplicates stay forbidden. Without it the only lever is dropping the constraint globally, which is how junk filler gets in. |
 | `--cores` | 5 was plenty | 8 theme words at 92 s on 5 cores. Ten cores for 1800 s got 9-10 — steeply diminishing. Most of the gain arrives in the first 30-60 s; the tail is one worker grinding at target N+1. |
 | `--timeout` | 600-900 s | Watch `--search-log` incumbent timestamps rather than waiting: on a good grid 7-8 arrive inside 30 s and the rest is tail. |
 | `--min-score` | 30 for L3-5, **~22 for L6-L7**, don't bother at L8 | Swept. See "The long-tail sweep" below — worth ~1 theme word, and there is a free win before you touch the bar at all. Beware: the Standard list's scores are cstenten + a canonical bonus, so `--min-score 30` on a rebuilt list silently discards most additions. |
@@ -374,6 +585,25 @@ The defect row is the one that improved, and it improved because of seeding rath
 because of anything in the dictionary. Note also that 10% theme density on 50 slots is
 **five** entries — on a small grid the count is small no matter what, so the clue voice
 has to carry more of the theme than it does on a 70-slot American grid.
+
+Karolína, third title, švédská, template built around the theme list rather than filled.
+Not comparable line-for-line to either of the above — the theme tier is the *entire*
+answer set, not a bonus — but that is exactly the point:
+
+| | candidate A | candidate B |
+|---|---|---|
+| grid | 32×32 | 23×23 |
+| answers | 79 | 64 |
+| theme entries | **79 / 79 (100 %)** | 52 / 64 (81 %) |
+| standard-tier filler | 0 | 12, all clued |
+| crossings | 93 | 91 |
+| hard defects (`fill_critic.py`) | 0 | 0 |
+| theme spread ratio | 0.98 | 1.00 |
+| clue length | median 15, max 32 (cap 34) | median 15, max 30 |
+| bands, honestly labelled | S 19 / O 13 / H 68 % | same theme set + 7 S / 4 O / 1 H filler |
+
+B is denser per unit area and reads like a magazine puzzle; A ships the whole list. The
+choice between them is editorial, not technical — which is the healthy state to be in.
 
 ## Traps I actually fell into
 
@@ -663,13 +893,24 @@ critic above.
 | `fill_critic.py` | per-entry verdicts, lemma collisions, spread, multi-term score | yes |
 | `clue_check.py` | the `CLUES.md` §11 kontrolor, all seven checks | yes |
 | `fill_margin.py` | pre-search κ screen | yes |
+| `build_tier.py` | standard tier by provenance + junk filters + corpus attestation, not by a score bar | yes |
+| `krizovkac_to_dict.py` | the Křížovkáč lexicon → scored dict + 68k-clue bank | yes |
+| `pin_long.py` | pins long theme entries with a correctly-sized solver oracle | yes |
+| `theme_grid.py` | builds the **template around** the theme words; ingrid fills the glue | yes |
+| `check_grid.py` | švédská legality: runs, orphans, legend load, connectivity, dict membership | yes |
+| `karolina_assemble.py` | grid + clue/band TSVs → one `puzzle.json` | yes |
+| `render_puzzle.py` | `puzzle.json` → interactive or review HTML, one self-contained file | yes |
+| `combine_review.py` | several review pages → one approval e-mail | yes |
+| `send_mail.py` | Resend with attachments | yes |
 | `crossword-email` skill | `--layout {american,swedish}`, `--tajenka` shading | yes |
 
 ## Next steps, roughly by effort
 
 **Done since v1** (kept here so nobody rebuilds them): the deterministic critic, the
 same-lemma collision check, theme spread, the constructor with the solver as oracle, the
-score-30-32 long-tail win, the estimator budget fix, and a second title.
+score-30-32 long-tail win, the estimator budget fix, a second and a third title, the
+template-around-the-theme constructor (`theme_grid.py`), `--dupe-exempt-preferred`, and
+the Czech+Slovak merged standard tier.
 
 **Low.**
 - Flag answers whose meaning is niche enough to need an anchor (loanwords, sports terms,
@@ -699,10 +940,24 @@ score-30-32 long-tail win, the estimator budget fix, and a second title.
   honest clue exists" class (`ladin`, `manas`, `roba`, `dom`, `rop`) that no regex catches.
 
 **Larger, and speculative.**
-- Joint grid+theme search. Still open, and the švédská makes it *more* attractive: without
-  symmetry the template space is far larger and a long slot costs half as much. Choosing
-  the grid *for a given theme vocabulary's length profile* should beat generic κ.
-- Backtracking over marquee placements. `theme_construct.py` is greedy first-fit and stops
-  at 2-3 entries; it never reconsiders an earlier placement that boxed in a later one.
-- A **third** title, ideally one that is neither place- nor topic-defined (a house style,
-  an author, an era) — the place/topic split is a two-point line and two points always fit.
+- Joint grid+theme search — **half done, and the done half was cheap.** `theme_grid.py`
+  saturates a small theme list, but it is greedy first-fit with suffix-removal ILS and it
+  never reconsiders an early placement that boxed in a later one. The measurable target is
+  *crossings per word* (2.35 at 32×32): a denser packing ships the same 79 words in a
+  smaller grid, and grid area is the thing that costs. Backtracking or an exact CP/MIP
+  formulation over placements is the obvious next move; so is the same trick applied to
+  `theme_construct.py`, which stops at 2-3 marquee entries for the same reason.
+- **Give the constructor the real oracle.** `theme_grid.py` screens glue runs with a
+  bitset unary filter because shelling out to `ingrid_core` per candidate placement is far
+  too slow at ~10⁴ placements per restart. A library entry point that answers "is this
+  partial template arc-consistent?" in-process would let the constructor use the solver's
+  own verdict at every step instead of a filter that is necessary but not sufficient.
+  That is the single tooling gap that cost the most time on this title.
+- **The theme list is the ceiling, and it cannot be expanded.** 79 forms is 79 answers;
+  there is no `theme_expand.py` move here because each clue is bound to its surface form.
+  What *would* help is a tool that goes the other way: propose inflections/relatives of a
+  hand list and ask the author to clue the ones the grid actually wants, i.e. expansion
+  driven by the placement search rather than by morphology.
+- A **fourth** title, ideally one defined by a house style, an author or an era — the
+  place / topic / person split is a three-point line and three points still fit almost
+  anything.

@@ -40,7 +40,18 @@ def load_dl(path, min_score):
     return {length: math.log2(n) for length, n in counts.items() if n}
 
 
+ALLOW_UNCHECKED = False
+
+
 def run_lengths(grid, width, height):
+    """Run lengths in both directions.
+
+    With ALLOW_UNCHECKED, runs of length 1 are dropped rather than reported. A length-1
+    run is a cell that belongs to a word in one direction only — an *unchecked* cell,
+    which a real Czech švédská is full of. Reporting it makes `min_run 3` reject the
+    grid, which is what forces the fully-checked American density this generator
+    produced by default. Length-2 runs are still reported and still rejected: those
+    would be two-letter answers."""
     out = []
     for r in range(height):
         c = 0
@@ -51,7 +62,8 @@ def run_lengths(grid, width, height):
             start = c
             while c < width and not grid[r][c]:
                 c += 1
-            out.append(c - start)
+            if not (ALLOW_UNCHECKED and c - start == 1):
+                out.append(c - start)
     for c in range(width):
         r = 0
         while r < height:
@@ -61,7 +73,8 @@ def run_lengths(grid, width, height):
             start = r
             while r < height and not grid[r][c]:
                 r += 1
-            out.append(r - start)
+            if not (ALLOW_UNCHECKED and r - start == 1):
+                out.append(r - start)
     return out
 
 
@@ -125,6 +138,55 @@ def adjacent_pairs(grid, width, height):
     )
 
 
+def answer_starts(grid, width, height, min_run):
+    starts = set()
+    for r in range(height):
+        c = 0
+        while c < width:
+            if grid[r][c]:
+                c += 1
+                continue
+            start = c
+            while c < width and not grid[r][c]:
+                c += 1
+            if c - start >= min_run:
+                starts.add(("A", r, start))
+    for c in range(width):
+        r = 0
+        while r < height:
+            if grid[r][c]:
+                r += 1
+                continue
+            start = r
+            while r < height and not grid[r][c]:
+                r += 1
+            if r - start >= min_run:
+                starts.add(("D", start, c))
+    return starts
+
+
+def dead_cells_exact(grid, width, height, min_run):
+    legend = set()
+    for kind, r, c in answer_starts(grid, width, height, min_run):
+        legend.add((r, c - 1) if kind == "A" else (r - 1, c))
+    return sum(1 for r in range(height) for c in range(width)
+               if grid[r][c] and (r, c) not in legend)
+
+
+def dead_cells(grid, width, height):
+    """Blocks carrying no legend. In a fully checked grid a block at (r, c) carries the
+    across legend of (r, c+1) and the down legend of (r+1, c), so it is dead exactly when
+    both of those are blocks or off-grid. These are the cells a reader sees as empty."""
+    return sum(
+        1
+        for r in range(height)
+        for c in range(width)
+        if grid[r][c]
+        and not (c + 1 < width and not grid[r][c + 1])
+        and not (r + 1 < height and not grid[r + 1][c])
+    )
+
+
 def energy(grid, width, height, dl, cfg):
     lengths = run_lengths(grid, width, height)
     score = 45.0 * sum(1 for length in lengths if length < cfg.min_run)
@@ -147,6 +209,7 @@ def energy(grid, width, height, dl, cfg):
     )
     score += cfg.kappa_weight * kappa_surrogate(lengths, dl)
     score += 0.20 * abs(blocks - cfg.target_blocks)
+    score += 12.0 * max(0, dead_cells_exact(grid, width, height, cfg.min_run) - cfg.max_dead)
     score -= 0.08 * min(adjacent_pairs(grid, width, height), 60)
     return score
 
@@ -255,6 +318,7 @@ def feasible(grid, width, height, cfg):
             for wanted, count in cfg.required.items()
         )
         and max(block_components(grid, width, height, cfg.frame)) <= cfg.max_block_component
+        and dead_cells_exact(grid, width, height, cfg.min_run) <= cfg.max_dead
     )
 
 
@@ -275,6 +339,10 @@ def main():
     parser.add_argument("--max-fives", type=int, default=14)
     parser.add_argument("--max-short-share", type=float, default=0.34)
     parser.add_argument("--max-block-component", type=int, default=5)
+    parser.add_argument("--allow-unchecked", action="store_true",
+                        help="permit cells belonging to a word in one direction only, as a real švédská does")
+    parser.add_argument("--max-empty", type=float, default=1.0,
+                        help="cap on blocks carrying no legend, as a fraction of all cells")
     parser.add_argument("--target-blocks", type=int, default=34)
     parser.add_argument("--density", type=float, default=0.24)
     parser.add_argument(
@@ -298,6 +366,9 @@ def main():
     }
     cfg.max_fives = args.max_fives
     cfg.max_short_share = args.max_short_share
+    cfg.max_dead = int(args.max_empty * args.width * args.height)
+    global ALLOW_UNCHECKED
+    ALLOW_UNCHECKED = args.allow_unchecked
     cfg.max_block_component = args.max_block_component
     cfg.target_blocks = args.target_blocks
     cfg.density = args.density
@@ -306,7 +377,7 @@ def main():
     cfg.iterations = args.iterations
 
     dl = load_dl(args.wordlist, args.min_score)
-    wanted = [int(x) for x in args.tajenka_lengths.split(",")]
+    wanted = [int(x) for x in args.tajenka_lengths.split(",") if x.strip()]
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
