@@ -368,7 +368,12 @@ fn wave_split_cohorts_match_the_single_wave_cohort() {
     let incumbent_words =
         canonical_fill_key(&config_ref, &result.fill.choices).expect("complete incumbent");
     let proposal = RankProposal::new(
-        config_ref.slot_options.iter().map(Vec::len).max().unwrap_or(0),
+        config_ref
+            .slot_options
+            .iter()
+            .map(Vec::len)
+            .max()
+            .unwrap_or(0),
         0.8,
     );
     let context = super::WalkContext {

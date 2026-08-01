@@ -48,7 +48,14 @@ impl CohortStatistics {
         } else {
             0.0
         };
-        let lower = (count * (1.0 - 1.96 * relative_standard_error)).max(f64::MIN_POSITIVE);
+        // Floor the interval at the certified evidence rather than at zero. When the
+        // relative standard error exceeds 1/1.96 the normal-approximation lower end goes
+        // negative; clamping that to `f64::MIN_POSITIVE` used to print a lower bound of
+        // -1022 bits, which is the log2 of the smallest subnormal double leaking into the
+        // report and reads as a broken number. The honest floor is the number of distinct
+        // fills we actually enumerated: those exist, so no interval may sit below them.
+        let certified = (known_lower_bound.max(1)) as f64;
+        let lower = (count * (1.0 - 1.96 * relative_standard_error)).max(certified);
         let upper = (count * (1.0 + 1.96 * relative_standard_error)).max(lower);
         Some(Summary {
             count,
@@ -151,5 +158,30 @@ mod tests {
         assert!((clamped.count - 100.0).abs() < f64::EPSILON);
         assert!(clamped.interval_bits.0 <= clamped.slack_bits);
         assert!(clamped.slack_bits <= clamped.interval_bits.1);
+    }
+
+    #[test]
+    fn wild_weight_spread_floors_the_interval_at_the_certified_bound() {
+        // Two accepted walks 30 bits apart: the relative standard error blows past
+        // 1/1.96, so the normal-approximation lower end is negative. It must clamp to the
+        // certified count, never to a subnormal that prints as -1022 bits.
+        let outcomes = vec![
+            WalkOutcome::Accepted {
+                log2_weight: 0.0,
+                fill: vec![0].into_boxed_slice(),
+            },
+            WalkOutcome::Accepted {
+                log2_weight: 30.0,
+                fill: vec![1].into_boxed_slice(),
+            },
+        ];
+        let estimate = summarize(&outcomes).estimate(2, 1.0).unwrap();
+        assert!(
+            estimate.interval_bits.0 >= 1.0,
+            "lower end {} fell below log2(2 certified fills)",
+            estimate.interval_bits.0
+        );
+        assert!(estimate.interval_bits.0 <= estimate.slack_bits);
+        assert!(estimate.slack_bits <= estimate.interval_bits.1);
     }
 }
