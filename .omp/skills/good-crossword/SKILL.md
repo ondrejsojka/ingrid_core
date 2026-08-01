@@ -266,9 +266,65 @@ An order of magnitude, from one geometry constraint. Things learned paying for i
   So on a 15×15 the empty-cell cap sets the answer count, the answer count sets the
   short-slot count, and the short-slot count sets the minimum dictionary depth — which
   then sets the filler quality you are forced to accept. Pick two of {small grid, few
-  empty cells, clean filler}. The lever nobody used yet is a **curated short-word list**:
-  a few hundred hand-picked, honestly clueable 3- and 4-letter Czech/Slovak entries would
-  move this more than anything else in this file.
+  empty cells, clean filler} — **unless you have a curated short-word list**, which turns
+  out to be the whole ballgame. See the next section: one existed in the repo the entire
+  time.
+
+### The short-word list existed all along, and I filtered on the wrong thing
+
+`local/legacy-krizovkac/` holds the lexicon of **Křížovkáč 0.0.1**, a Czech
+crossword-setting program from 2015: **68 174 answers, every one carrying a clue a human
+setter wrote**, and — the part that matters — **1 833 three-letter and 4 659 four-letter**
+entries. A dense 15×15 švédská has ~24 three-letter slots and no frequency list covers
+them. Nothing in the pipeline referenced it; it surfaced only because the repo owner
+remembered it existed. It is now committed at `resources/krizovkac/` with
+`scripts/krizovkac_to_dict.py`, because `local/` is gitignored and this was one disk
+failure from gone.
+
+Dropping it into the tier moved the filler from `srz htm ámose spu inac` to
+`rozptyl akadi ásana esauli`, took theme 8 → 9, and — because each entry ships a clue —
+turned "write 53 clues" into "write 6".
+
+**And that last number is where I made a real reasoning error, so it goes in the file.**
+I let *"does this word already have a clue"* become a hard constraint on the fill and
+reported the resulting trade-off as if it were physics ("gating the lexicon costs
+21 hand-written clues instead of 6"). It is not physics. Writing clues is *my job* and it
+is cheap. I had quietly optimised the artifact around my own convenience and then
+presented that as a property of the problem.
+
+> **Clue availability is a convenience for the setter, never a constraint on the fill.
+> The filler-quality signal is corpus attestation.**
+
+Which is measurable, and already implemented. A crossword lexicon is *made of*
+crosswordese — that is its purpose — so **22 802 of Křížovkáč's 68 174 entries (33 %)
+occur nowhere in a 5.6-billion-token corpus**: `aab`, `aabbcc`, `abakun`, `obosm`,
+`lejzr`, and `nelsn`, the one the reader laughed at. `build_tier.py --gated
+--attest <corpus> --attest-floor 25` keeps 36 551 of them, still leaving 4 116 short
+words. Measured on the same 15×15 grid:
+
+| | ungated | gated at 25 |
+|---|---:|---:|
+| filler unattested in csTenTen | **18 / 52** | **5 / 53** |
+| median corpus score of filler | 33.5 | 38 |
+| theme entries | 9 | 8 |
+
+`filip nesel okolo atika činel kernel mládenec navlas azyl` instead of
+`nelsn akadi isi íhá npk ásana hto esauli`. One theme entry is a fair price.
+
+**Trace junk to its source before you filter anything.** I spent a round convinced the
+crosswordese was coming from the Čapek supplement and was about to filter Čapek by
+frequency. Tracing 34 suspect words: **31 came from Křížovkáč**, one from Čapek (and it
+was a perfectly normal word), two from the csTenTen tail. Filtering Čapek would have
+achieved exactly nothing. A three-column provenance table costs a minute and prevents
+gating the wrong tier.
+
+**Corollary, third sighting: `--min-score` is not a junk filter.** It is a frequency
+threshold in a quality costume. Today it (a) discarded a whole flat-scored supplement —
+`capek_to_dict.py` emits `word;30`, so `--min-score 45` deleted the tier entirely, (b)
+still admitted `srz`, `htm`, `spu` at bar 33, and (c) had to be abandoned to get the
+long tail at all. `build_tier.py` replaces it with provenance plus explicit junk rules
+(de-accented doublets `udeli` beside `udělí`: 35 226 dropped; short-and-unvouched:
+10 089) and runs at `--min-score 21`, i.e. no frequency gate at all.
 
 ### Glue slots: screen at the bar you will fill at
 
