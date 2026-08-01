@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Constructive 15x15 grid search for templates that carry a long tajenka slot.
 
-The generic annealer in `lfs_grid_gen.py` cannot reach a length-11 slot: from an
+A plain annealer over block patterns cannot reach a length-11 slot: from an
 11-free start there is no downhill path that grows a first 11-run, because every
 intermediate state pays the run-length penalty. This script sidesteps that by
 *planting* the long runs first and freezing their rows, then annealing only the

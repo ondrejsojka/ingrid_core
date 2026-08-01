@@ -79,7 +79,7 @@ cargo run --release -- \
 - Feature-gated behavior belongs behind existing Cargo features (`serde`, `check_invariants`) where applicable.
 - Do not preserve backwards compatibility.
 
-Python scripts generally emit deterministic `word;score` dictionaries and optional CSV/JSON audit artifacts. Preserve exact-normalized denylist precedence and cache fingerprint checks when changing those pipelines. `scripts/fill_margin.py` is a calibrated pre-search heuristic, not a solution-count estimator; `fillability-slack.md` describes proposals, including commands that may not exist.
+Python scripts generally emit deterministic `word;score` dictionaries and optional CSV/JSON audit artifacts. Preserve exact-normalized denylist precedence and cache fingerprint checks when changing those pipelines. `scripts/fill_margin.py` is a calibrated pre-search heuristic, not a solution-count estimator.
 
 ## Important Files
 
