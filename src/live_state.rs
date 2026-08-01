@@ -189,7 +189,13 @@ impl LiveSearchState {
             let dupes = config
                 .word_list
                 .dupe_index
-                .get_dupes_by_length((slot.length, choice.word_id));
+                .get_dupes_by_length(
+                    (slot.length, choice.word_id),
+                    config.word_list.exempt_preferred_dupes,
+                    &|global_word_id| {
+                        config.word_list.word_tier(global_word_id) == WordTier::Preferred
+                    },
+                );
             for other_choice in &choices[index + 1..] {
                 let other_slot = &config.slot_configs[other_choice.slot_id];
                 if dupes

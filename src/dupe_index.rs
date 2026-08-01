@@ -39,7 +39,19 @@ pub trait AnyDupeIndex {
     fn add_word(&mut self, word_id: WordId, word: &Word);
     fn add_dupe_pair(&mut self, global_word_id_1: GlobalWordId, global_word_id_2: GlobalWordId);
     fn remove_dupe_pair(&mut self, global_word_id_1: GlobalWordId, global_word_id_2: GlobalWordId);
-    fn get_dupes_by_length(&self, global_word_id: GlobalWordId) -> HashMap<usize, HashSet<WordId>>;
+
+    /// For a given word, get a map containing all words that duplicate it, indexed by their length.
+    ///
+    /// If `exempt_preferred_dupes` is true and `is_preferred` reports that both this word and a
+    /// group-mate are preferred-tier, the pair's shared-substring relationship is omitted. Whole-word
+    /// duplicates, explicit dupe pairs, and any pair involving a standard-only word are always
+    /// included. `is_preferred` is only invoked when `exempt_preferred_dupes` is true.
+    fn get_dupes_by_length(
+        &self,
+        global_word_id: GlobalWordId,
+        exempt_preferred_dupes: bool,
+        is_preferred: &dyn Fn(GlobalWordId) -> bool,
+    ) -> HashMap<usize, HashSet<WordId>>;
 
     // Allow moving extra dupe pairs in and out to facilitate replacing the word list.
     fn take_extra_dupes(&mut self) -> HashMap<GlobalWordId, Vec<GlobalWordId>>;
@@ -111,10 +123,22 @@ impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
     }
 
     /// For a given word, get a map containing all words that duplicate it, indexed by their length.
-    fn get_dupes_by_length(&self, global_word_id: GlobalWordId) -> HashMap<usize, HashSet<WordId>> {
+    ///
+    /// Whole-word duplicates (the word itself) and explicitly-declared dupe pairs are always
+    /// included. When `exempt_preferred_dupes` is set, shared-substring duplicates are omitted
+    /// when both this word and the group-mate are preferred-tier (per `is_preferred`); a pair
+    /// involving a standard-only word is still included. The flag is checked before consulting
+    /// `is_preferred`, so no tier lookups happen when the exemption is disabled.
+    fn get_dupes_by_length(
+        &self,
+        global_word_id: GlobalWordId,
+        exempt_preferred_dupes: bool,
+        is_preferred: &dyn Fn(GlobalWordId) -> bool,
+    ) -> HashMap<usize, HashSet<WordId>> {
         let mut dupes_by_length: HashMap<usize, HashSet<WordId>> = HashMap::new();
 
-        // All words duplicate themselves, regardless of length.
+        // All words duplicate themselves, regardless of length, and this is never exempted: two
+        // copies of the same entry in one grid stay forbidden even between preferred words.
         dupes_by_length
             .entry(global_word_id.0)
             .or_default()
@@ -123,10 +147,17 @@ impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
         let group_ids = self.group_keys_by_word.get(&global_word_id);
         let extra_dupes = self.extra_dupes_by_word.get(&global_word_id);
 
+        // Only shared-substring relationships are exemptible, and only when both sides are
+        // preferred-tier.
+        let exempting = exempt_preferred_dupes && is_preferred(global_word_id);
+
         if let Some(group_ids) = group_ids {
             for &group_id in group_ids {
                 for &(length, word) in &self.groups[group_id] {
-                    dupes_by_length.entry(length).or_default().insert(word);
+                    let dupe = (length, word);
+                    if dupe == global_word_id || !(exempting && is_preferred(dupe)) {
+                        dupes_by_length.entry(length).or_default().insert(word);
+                    }
                 }
             }
         }

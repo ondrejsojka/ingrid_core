@@ -121,6 +121,11 @@ struct Args {
     #[arg(long)]
     max_shared_substring: Option<usize>,
 
+    /// Ignore shared-substring duplicates when both entries are preferred-tier; pairs involving a
+    /// standard-only entry and whole-word duplicates are still enforced
+    #[arg(long, default_value_t = false)]
+    dupe_exempt_preferred: bool,
+
     /// Convert accented letters to their unaccented forms in the grid and word lists
     #[arg(long, default_value_t = false)]
     ignore_diacritics: bool,
@@ -350,6 +355,7 @@ fn main() -> Result<(), Error> {
         Some(max_side),
         args.max_shared_substring,
     );
+    word_list.exempt_preferred_dupes = args.dupe_exempt_preferred;
     if has_preferred_wordlist {
         word_list.set_preferred_source_ids(HashSet::from(["preferred".into()]));
     }

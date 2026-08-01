@@ -429,6 +429,11 @@ pub struct WordList {
     /// A dupe index reflecting the max substring length provided when configuring the `WordList`.
     pub dupe_index: BoxedDupeIndex,
 
+    /// When set, shared-substring duplicate pairs are ignored when both words are preferred-tier.
+    /// Whole-word duplicates and explicitly-declared dupe pairs are still enforced, and any pair
+    /// involving a standard-only word still counts as a dupe.
+    pub exempt_preferred_dupes: bool,
+
     /// The maximum word length provided when configuring the `WordList`, if any.
     pub max_length: Option<usize>,
 
@@ -471,6 +476,7 @@ impl WordList {
             words: vec![vec![]],
             word_id_by_string: HashMap::new(),
             dupe_index: WordList::instantiate_dupe_index(max_shared_substring),
+            exempt_preferred_dupes: false,
             max_length,
             on_update: None,
             source_configs: vec![],
@@ -1590,7 +1596,7 @@ pub mod tests {
 
         let is_dupe = |index: &dyn AnyDupeIndex, id_1: GlobalWordId, id_2: GlobalWordId| {
             index
-                .get_dupes_by_length(id_1)
+                .get_dupes_by_length(id_1, false, &|_| false)
                 .get(&id_2.0)
                 .cloned()
                 .map_or(false, |dupes| dupes.contains(&id_2.1))
@@ -1630,6 +1636,69 @@ pub mod tests {
         // Remove custom pair and check again
         soft_dupe_index.remove_dupe_pair(golf_id, golves_id);
         assert_not_dupe(&*soft_dupe_index, golf_id, golves_id);
+    }
+
+    #[test]
+    fn test_dupe_exempt_preferred() {
+        let source = |id: &str, words: &[&str]| WordListSourceConfig {
+            id: id.into(),
+            enabled: true,
+            provider: WordListSourceConfigProvider::Memory {
+                words: words
+                    .iter()
+                    .map(|word| (word.to_string(), 50))
+                    .collect(),
+            },
+            normalization: None,
+        };
+
+        let mut word_list = WordList::new(
+            vec![
+                source("preferred", &["golf", "golfy"]),
+                source("standard", &["golfer"]),
+            ],
+            None,
+            Some(6),
+            Some(3),
+        );
+        word_list.set_preferred_source_ids(HashSet::from(["preferred".into()]));
+
+        let get_id = |word: &str| -> GlobalWordId {
+            (
+                word.chars().count(),
+                *word_list.word_id_by_string.get(word).unwrap(),
+            )
+        };
+        let golf_id = get_id("golf");
+        let golfy_id = get_id("golfy");
+        let golfer_id = get_id("golfer");
+
+        let is_preferred = |global_word_id: GlobalWordId| {
+            word_list.word_tier(global_word_id) == WordTier::Preferred
+        };
+        let is_dupe = |exempt: bool, id_1: GlobalWordId, id_2: GlobalWordId| {
+            word_list
+                .dupe_index
+                .get_dupes_by_length(id_1, exempt, &is_preferred)
+                .get(&id_2.0)
+                .is_some_and(|dupes| dupes.contains(&id_2.1))
+        };
+
+        // With the exemption off, a preferred/preferred pair sharing a substring is still a dupe.
+        assert!(is_dupe(false, golf_id, golfy_id));
+        assert!(is_dupe(false, golfy_id, golf_id));
+
+        // With the exemption on, the preferred/preferred pair is exempt in both directions...
+        assert!(!is_dupe(true, golf_id, golfy_id));
+        assert!(!is_dupe(true, golfy_id, golf_id));
+
+        // ...a pair involving a standard-only word is still enforced in both directions...
+        assert!(is_dupe(true, golf_id, golfer_id));
+        assert!(is_dupe(true, golfer_id, golf_id));
+
+        // ...and a word always duplicates itself, even when preferred/preferred.
+        assert!(is_dupe(true, golf_id, golf_id));
+        assert!(is_dupe(true, golfy_id, golfy_id));
     }
 
     #[test]

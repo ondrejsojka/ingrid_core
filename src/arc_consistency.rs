@@ -19,7 +19,7 @@ use std::fmt::Debug;
 use crate::grid_config::{Crossing, CrossingId, GridConfig, SlotConfig, SlotId};
 use crate::types::WordId;
 use crate::util::{build_glyph_counts_by_cell, GlyphCountsByCell};
-use crate::word_list::WordList;
+use crate::word_list::{WordList, WordTier};
 
 /// Structure for tracking words eliminated from a given slot while establishing arc consistency.
 #[derive(Debug)]
@@ -471,7 +471,13 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
             let dupes_by_length = config
                 .word_list
                 .dupe_index
-                .get_dupes_by_length((slot_config.length, word_id));
+                .get_dupes_by_length(
+                    (slot_config.length, word_id),
+                    config.word_list.exempt_preferred_dupes,
+                    &|global_word_id| {
+                        config.word_list.word_tier(global_word_id) == WordTier::Preferred
+                    },
+                );
 
             for other_slot_id in 0..config.slot_configs.len() {
                 if other_slot_id == slot_id || fixed_slots[other_slot_id] {
