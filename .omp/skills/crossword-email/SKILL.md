@@ -27,6 +27,9 @@ obvious visually and invisible in the source.
 
 ## Inputs
 
+- `--layout`: `{american,swedish}`, default `american`.
+  - `american`: standard numbered grid with separate Vodorovně / Svisle clue lists.
+  - `swedish`: magazine-style layout where clues/legends sit inside the `#` grid cells.
 - `--fill`: the grid as the solver prints it, `#` for blocks, one row per line,
   letters lowercase with diacritics.
 - `--clues`: TSV, one line per entry: `answer<TAB>clue[<TAB>band<TAB>shape]`.
@@ -37,6 +40,14 @@ obvious visually and invisible in the source.
 - `--intro`: optional HTML fragment dropped under the headline. This is where the
   commentary goes; keep it out of the script.
 
+## Swedish layout rules & constraints
+
+- **Legend-cell rule:** Every word's legend sits in the cell immediately preceding it:
+  across word starting at `(r, c)` uses `(r, c-1)`; down word starting at `(r, c)` uses `(r-1, c)`.
+- **Row 0 / Column 0:** Row 0 and Column 0 must consist of legend cells (`#`), because any answer starting in row 0 or column 0 would have its legend cell off-grid.
+- **Two failure exits:**
+  1. **Off-grid or non-`#` legend cell:** `sys.exit` naming the answer and grid coordinates if a legend cell is outside grid boundaries or lands on an answer letter cell instead of `#`.
+  2. **Conflicting legends:** `sys.exit` naming the entries if a legend cell would be assigned multiple across legends or multiple down legends.
 ## Hard-won details
 
 - **The key is send-only.** `~/.env` holds `RESEND_API_KEY`. It cannot list domains
