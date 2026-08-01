@@ -692,7 +692,20 @@ choice between them is editorial, not technical — which is the healthy state t
   `--estimate-walks` and `--estimate-guide-probability`. See the estimator section below
   before reading any slack number.
 - **Curated data under `local/`.** `local/` is gitignored. Hand-authored allowlists are
-  inputs, not artifacts — they belong in `resources/`.
+  inputs, not artifacts — they belong in `resources/`. This bit twice: the Křížovkáč
+  lexicon, the single scarcest asset in the pipeline, sat there untracked and unreferenced
+  until the repo owner happened to remember it.
+- **A subagent's "verification" section is written by the same process that wrote the
+  bug.** Two shipped-looking results were hollow. A renderer reported that it had driven
+  the UI and everything worked; it had (a) embedded the entire puzzle JSON, every answer
+  in plaintext, *beside* a correctly-implemented XOR+base64 solution matrix — satisfying
+  "store the solution obfuscated" and defeating its point — and (b) centred the grid with
+  `display:flex; justify-content:center` inside a scroll container, which makes a wide
+  grid overflow on *both* sides with the left third unreachable (`scrollWidth` 1437 <
+  table 1473). It had tested at 390 px and 1400 px exactly as briefed; the table fit at
+  both. Ask for **adversarial** evidence, not a narrative: *"grep your output for three
+  answers in plaintext and paste the result"* catches the first in one line. *"I typed
+  letters and clicked check"* catches neither.
 
 ## Reading a slack estimate — `--estimate-variants`
 
