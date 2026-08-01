@@ -1,0 +1,87 @@
+# LFŠ denylist — words excluded from the Preferred tier even when salient.
+# Every token below appears in the LFŠ analysis (local/lfs/lfs_analysis.json) or
+# the corpus text with the count shown; nothing is denied speculatively. Tokens
+# from the sponsor/masthead candidate lists that do NOT occur in the corpus are
+# documented at the bottom and intentionally not denied.
+# Format: one lowercase NFC lemma per line; `#` starts a comment. Consumed via
+# metropolitan_theme_dict.py --denylist and theme_tier.py --denylist.
+
+# --- Masthead I: the "Filmové listy připravili" colophon, bottom of every issue
+václavíková      # Jana Václavíková, šéfredaktorka. c=82 d=36 sal=-11.9 — colophon-heavy
+čermák           # Iva Čermák Přivřelová, editorka. c=3 (see note at bottom on the noun dual)
+přivřelová       # Iva Čermák Přivřelová. c=48
+klímová          # Nela Klímová, design. c=12 diacritics-bearing Klímová; add klimová only if it ever appears
+bergl            # Petr Bergl, redakce. c=200 d=38
+pleštil          # Martin Pleštil, redakce. c=141 d=38
+roháčková        # Kristina Roháčková, redakce. c=96 d=32
+dostálová        # Anna Dostálová, redakce. c=47 d=27
+vrbová           # photographer credit. c=39 d=4
+petrášek         # Radek Petrášek ("foto: Radek Petrášek"). c=53
+
+# --- Masthead II: festival leadership and programme staff (not the daily colophon but the same class)
+korená           # Radana Korená, ředitelka LFŠ. c=101 d=39
+hejlíčková       # Iva Hejlíčková, programová ředitelka. c=112 d=39
+suchnová         # Silvie Suchnová, marketingová ředitelka. c=58 d=38
+jílek            # Jan Jílek, programový ředitel LFŠ. c=176 d=40 sal=-18.5 — deny on role, not on salience
+jendřejek        # Jan Jendřejek, technický vedoucí / film historian staff. c=114 d=44
+huspenina        # David Huspenina ("ke komunikaci ujal…" — festival comms). c=9 d=4; also noun/surname-ambiguous, see note
+coufalová        # Eva Coufalová, redakce. c=39 d=12 — 15 of 45 tokens inside the colophon window
+jedličková       # redakce, c=18 d=10
+hlavicová        # redakce 2026, c=9 d=8
+voráčková        # redakce 2026, c=9 d=8
+brdečková        # redakce 2026, c=6 d=4
+semerádová       # redakce credit, c=6 d=1
+rathouská        # redakce credit, c=6 d=3
+doláková         # redakce credit, c=5 d=3
+zabloudilová     # redakce credit, c=8 d=5
+pilař            # festival TV/video staff (visible in FL 2021 text; tagger did not surface as a lemma)
+schmarc          # Vít Schmarc (Čelisti staff magazine masthead). c=48 d=4 — partner title's masthead, same class
+
+# --- Bulletin chrome: the crossword itself and the production apparatus
+křížovka         # the crossword it ships: c=40 tokens, sal=-17
+tajenka          # crossword tajenka (prize meta)
+luštit           # crossword verb
+luštění          # crossword noun
+vyluštit         # perfective of luštit
+soutěžní         # 'Soutěžní křížovka' section header
+šéfredaktorka    # masthead role
+editorka         # masthead role
+redakce          # masthead role
+sazba            # 'Design a sazba'
+tisk             # 'Tisk' colophon role
+stažení          # 'Filmové listy ke stažení'
+vydání
+ročník
+strana
+stránka
+obsah
+číslo
+foto             # photo credit prefix
+pořadatel
+partner
+akreditace       # accreditation rules, repeated in every issue
+
+# --- Programme EN legend: upper-case legend column headers, not Czech theme vocabulary
+guest            # Host legend
+section          # Sekce legend
+length           # Délka legend
+lenght           # typo'd Délka legend (in corpus)
+english          # English-friendly flag
+year             # Year legend
+age              # Age legend
+wave             # Wave section legend
+stage            # Stage legend
+online           # Online stream annotation
+history          # FAMU History section legend
+cinema           # EN boilerplate legend
+filmlist         # 'Filmové listy' URL/slug fragment, treated as a single token upstream
+
+# --- Sponsors that DO occur in the corpus (deny on occurrence, verified against inv_allcaps/analysis)
+mindok           # Mindok (board-game imprint), 14 tokens Mindok+MINDOK; no lowercase paradigm
+voxpot           # Voxpot, c=4 (+Voxpotu); no lowercase paradigm
+
+# --- Known candidate-list members intentionally NOT denied (no attestation in this corpus):
+# egoe nextbike audiom repaspoint kinema momezone toxin kultino radio1 totalfilm fullmoon silic
+# ackee datakal capsa profimat lush poema kia poema tiráž burián
+# deník ("Deník" c=12 d=? is a common noun cs=46; theme_tier rarity handles it)
+# pecháček (Judit Pecháček is an actress/host — a film-world name, evaluated in inv_people)

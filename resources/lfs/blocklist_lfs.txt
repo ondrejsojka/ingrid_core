@@ -1,0 +1,14 @@
+# LFŠ-specific additions to resources/blocklist_cs.txt. Every entry was observed in a
+# real candidate fill and rejected by hand; the reference score is CSTenTen.
+# archaic or misspelled forms that read as typos in a grid
+oudolí
+# slang and colloquialisms below the register of a festival bulletin
+fazona
+akurát
+# fragments and abbreviations with no honest clue
+hrd
+hum
+# genitive plural of `aula`; bare, and it collides with every other aula form
+aul
+akorát
+zor

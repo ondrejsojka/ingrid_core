@@ -1,0 +1,21 @@
+# LFŠ festival initialisms — input to theme_expand.py --literal. All counts from inv_allcaps.csv.
+# Score 260 matches theme_tier.py --acronym-score so this literal list sorts with mined acronyms when unioned.
+# Every entry is attested in the corpus (count shown); two candidate names were checked and are NOT attested,
+# so they are documented at the bottom but intentionally absent from the list.
+# lowercase NFC `word;score` — same format as resources/metropolitan/initialisms.dict.
+
+lfš;260      # LFŠ  c=379 d=52 — Letní filmová škola, the festival itself
+ačfk;260     # AČFK c=143 d=40 — Asociace českých filmových klubů, the organiser
+čt;260       # ČT   c=152 d=20 — Česká televize
+famu;260     # FAMU c=152 d=29 — Filmová akademie múzických umění
+affn;260     # AFFN c=24  d=9  — AFFN uvádí programme section (art film festival network)
+vr;260       # VR   c=215 d=22 — virtual-reality programme section
+frsh;260     # FRSH c=11  d=3  — FRSH (Fresh) programme section
+lfs;260      # LFS  c=12  d=12 — staff/system abbreviation (Jméno: LFS) — harmless duplicate of lfš
+vod;260      # VOD  c=3   d=2  — video on demand (festival streaming section)
+dcp;260      # DCP  c=5   d=?  — Digital Cinema Package; FLAGGED to Main as arguable real projection jargon, included pending call
+nfa;260      # NFA  c=1   d=1  — Národní filmový archiv ("v knihovně NFA")
+kviff;260    # KVIFF c=1  d=1  — Karlovy Vary IFF (award-credit line); borderline, keep or drop at curation
+
+# NOT attested in this corpus — deliberately absent:
+# DKF  c=0 — "domácí kino festival" (or similar); never printed in these 80 documents

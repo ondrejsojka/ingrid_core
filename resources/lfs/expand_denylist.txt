@@ -1,0 +1,23 @@
+# Grotesque or misleading surface forms that MorphoDiTa generates from the LFŠ curated
+# lemmas. Each was inspected in local/lfs/dict/lfs_curated_expanded.csv.
+# 1. phonologically correct but unusable locative plurals of abstract nouns
+gazích
+dabinzích
+střizích
+# 2. animate paradigm applied to an inanimate lemma
+kulta
+kultovi
+kultové
+hvězdovi
+hvězdové
+# 3. dual instrumental adjective forms - marked register, read as a typo in a grid
+němýma
+kultovníma
+animovanýma
+dokumentárníma
+slováckýma
+uherskýma
+hranýma
+# 4. fragments and homograph traps
+div
+plátny

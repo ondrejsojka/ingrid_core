@@ -1,0 +1,225 @@
+#	Hand-authored Preferred-tier seed for LFŠ (Letní filmová škola Uherské Hradiště).
+#	Every row is attested against local/lfs/txt/** by scripts/curated_dict.py; a row whose
+#	evidence regex does not match the corpus fails the build. Evidence is never invented.
+#
+#	Membership test used for every row (good-crossword skill): would a reader recognise this
+#	word as belonging to a FILM FESTIVAL with the clue covered? That is why sál, host, úvod,
+#	klub, stan, aula, ceny, noc, program are absent even though they are the highest-salience
+#	tokens in the corpus — they are festival *layout*, not festival *vocabulary*.
+#
+#	score 200 = unmistakably cinema or unmistakably LFŠ; 150 = solidly thematic.
+word	kind	category	hook	score	gloss	evidence
+film	lemma	film-remeslo	OBOR	200	médium celé akce	
+kino	lemma	film-remeslo	OBOR	200	sál i instituce	
+kinosál	lemma	film-remeslo	OBOR	200	sál s plátnem	
+plátno	lemma	film-remeslo	OBRAZ	200	na čem se promítá	
+projekce	lemma	film-remeslo	OBOR	200	jedno promítání	
+promítání	lemma	film-remeslo	OBOR	200	činnost promítače	
+promítačka	lemma	film-remeslo	OBRAZ	200	stroj v kabině	
+projektor	lemma	film-remeslo	OBRAZ	150	svítí na plátno	
+titulek	lemma	film-remeslo	OBOR	200	řádek pod obrazem	titulk
+mezititulek	lemma	film-remeslo	OBOR	150	text v němém filmu	mezititulk
+dabing	lemma	film-remeslo	OBOR	200	český hlas cizího herce	
+kamera	lemma	film-remeslo	OBOR	200	snímá obraz	
+kameraman	lemma	film-remeslo	OBOR	200	člověk za kamerou	
+scénář	lemma	film-remeslo	OBOR	200	film na papíře	
+scenárista	lemma	film-remeslo	OBOR	200	autor scénáře	
+režie	lemma	film-remeslo	OBOR	200	kdo film vede	
+režisér	lemma	film-remeslo	OBOR	200	šéf natáčení	
+režisérka	lemma	film-remeslo	OBOR	200	šéfka natáčení	
+herec	lemma	film-remeslo	OBOR	200	je vidět na plátně	
+herečka	lemma	film-remeslo	OBOR	200	je vidět na plátně	
+střih	lemma	film-remeslo	OBOR	200	spoj dvou záběrů	
+záběr	lemma	film-remeslo	OBOR	200	kus filmu bez střihu	
+snímek	lemma	film-remeslo	OBOR	200	jiné slovo pro film	
+premiéra	lemma	film-remeslo	OBOR	200	poprvé před diváky	
+distribuce	lemma	film-remeslo	OBOR	150	cesta filmu do kin	
+natáčení	lemma	film-remeslo	OBOR	200	práce před kamerou	
+klapka	lemma	film-remeslo	OBRAZ	200	cvakne před záběrem	
+komparz	lemma	film-remeslo	OBOR	150	dav v pozadí	
+kostým	lemma	film-remeslo	OBRAZ	150	co má herec na sobě	
+rekvizita	lemma	film-remeslo	OBRAZ	150	předmět ve scéně	rekvizit
+kinematografie	lemma	film-remeslo	OBOR	200	souhrn filmové tvorby	
+filmař	lemma	film-remeslo	OBOR	200	kdo dělá filmy	
+divák	lemma	film-remeslo	OBOR	200	sedí v sále	
+publikum	lemma	film-remeslo	OBOR	150	všichni diváci naráz	
+scéna	lemma	film-remeslo	OBOR	150	jeden výjev	
+epizoda	lemma	film-remeslo	OBOR	150	díl seriálu	
+role	lemma	film-remeslo	OBOR	200	co herec dostane	
+kopie	lemma	film-remeslo	OBOR	150	to, co dorazí do kina	
+žánr	lemma	film-zanr	OBOR	200	škatulka filmu	
+komedie	lemma	film-zanr	OBOR	200	má se u ní smát	
+drama	lemma	film-zanr	OBOR	200	nemá se u něj smát	
+horor	lemma	film-zanr	OBOR	200	má se u něj bát	
+thriller	lemma	film-zanr	OBOR	200	napínavý až do konce	
+western	lemma	film-zanr	OBOR	200	kůň, kolt, prérie	
+muzikál	lemma	film-zanr	OBOR	200	najednou se zpívá	
+dokument	lemma	film-zanr	OBOR	200	nehraný film	
+noir	literal	film-zanr	OBOR	200	stíny, déšť, detektiv	
+neorealismus	lemma	film-zanr	OBOR	150	italská poválečná škola	
+expresionismus	lemma	film-zanr	OBOR	150	německé křivé stíny	
+avantgarda	lemma	film-zanr	OBOR	150	před svou dobou	
+němý	lemma	film-zanr	OBOR	200	film před rokem 1927	
+hraný	lemma	film-zanr	OBOR	150	opak dokumentu	
+animovaný	lemma	film-zanr	OBOR	150	kreslený nebo loutkový	
+dokumentární	lemma	film-zanr	OBOR	150	nehraný, přívlastkem	
+kultovní	lemma	film-zanr	OBOR	150	má svou sektu diváků	
+gag	lemma	film-zanr	OBOR	200	vtip beze slov	gag
+festival	lemma	festival	OBOR	200	přehlídka filmů	
+retrospektiva	lemma	festival	OBOR	200	celé dílo jednoho tvůrce	
+sekce	lemma	festival	OBOR	150	oddíl programu	
+dramaturg	lemma	festival	OBOR	200	sestavuje program	
+dramaturgie	lemma	festival	OBOR	150	výběr filmů	
+delegace	lemma	festival	OBOR	200	tvůrci přijedou na projekci	
+akreditace	lemma	festival	OBOR	200	visí na krku	
+lektor	lemma	festival	OBOR	150	uvede film před projekcí	
+přednáška	lemma	festival	OBOR	150	mluví se, nepromítá	
+diskuze	lemma	festival	OBOR	150	po filmu se ptá sál	
+debata	lemma	festival	OBOR	150	po filmu se ptá sál	
+workshop	lemma	festival	OBOR	150	dílna pro účastníky	
+zahájení	lemma	festival	OBOR	150	první večer	
+filmovka	lemma	festival	MISTO	200	jak se LFŠ říká mezi svými	
+klubista	lemma	festival	MISTO	200	člen filmového klubu	
+tajenka	lemma	festival	OBOR	150	to, co se posílá mailem	
+křížovka	lemma	festival	OBOR	150	poslední strana Listů	
+osmisměrka	lemma	festival	OBOR	150	sestřenice křížovky	
+hvězda	lemma	misto	MISTO	200	hradišťské kino i herečka	
+reduta	lemma	misto	MISTO	200	dva sály na náměstí	
+orlovna	lemma	misto	MISTO	150	hradišťský sál	
+hradiště	lemma	misto	MISTO	200	město pod Rochusem	
+uherský	lemma	misto	MISTO	200	přívlastek Hradiště i Brodu	
+slovácko	lemma	misto	MISTO	200	kraj kolem Hradiště	
+slovácký	lemma	misto	MISTO	150	zdejší, přívlastkem	
+cimbál	lemma	misto	OBRAZ	150	slyšíš ho ve vinném stanu	
+kunovice	lemma	misto	MISTO	150	město hned vedle	
+velehrad	lemma	misto	MISTO	150	poutní místo kousek odsud	
+antonioni	literal	jmeno	OBOR	200	retrospektiva 2026	
+antonioniho	literal	jmeno	TVAR	200	retrospektiva 2026, 2. pád	
+polanski	literal	jmeno	OBOR	200	druhá retrospektiva 2026	
+lubitsch	literal	jmeno	OBOR	200	němé německé filmy 2026	
+blier	literal	jmeno	OBOR	150	známý neznámý 2026	
+krumbachová	lemma	jmeno	OBOR	200	kdo, když ne… 2026	krumbachov
+riefenstahl	literal	jmeno	OBOR	150	autorka Olympie	
+chytilová	lemma	jmeno	OBOR	200	Sedmikrásky	chytilov
+forman	literal	jmeno	OBOR	200	Amadeus	forman
+formana	literal	jmeno	TVAR	200	Amadeus, 2. pád	formana
+formanem	literal	jmeno	TVAR	200	Amadeus, 7. pád	forman
+menzel	literal	jmeno	OBOR	200	Ostře sledované vlaky	menzel
+menzela	literal	jmeno	TVAR	200	Ostře sledované vlaky, 2. pád	menzel
+fellini	literal	jmeno	OBOR	200	Sladký život	
+godard	literal	jmeno	OBOR	200	U konce s dechem	
+bergman	literal	jmeno	OBOR	200	Sedmá pečeť	
+tarantino	lemma	jmeno	OBOR	200	Pulp Fiction	tarantin
+coppola	lemma	jmeno	OBOR	200	Kmotr	coppol
+ocelot	literal	jmeno	OBOR	150	host 2026, Kirikou	ocelot
+geislerová	lemma	jmeno	OBOR	150	česká herečka	geislerov
+lábus	literal	jmeno	OBOR	150	český herec	lábus
+zvětšenina	lemma	titul	OBOR	200	Antonioniho Blow-Up	
+olympia	lemma	titul	OBOR	150	film o berlínské olympiádě	
+dogma	lemma	titul	OBOR	150	dánský manifest z roku 1995	
+wirbel	literal	titul	OBOR	150	zahajovací film 2026	
+sirat	literal	titul	OBOR	150	film Olivera Laxe	
+cannes	literal	titul	OBOR	200	festival na Riviéře	
+berlinale	literal	titul	OBOR	200	festival s medvědem	
+oscar	lemma	titul	OBOR	200	soška z Hollywoodu	oscar
+lfš	literal	zkratka	OBOR	200	tahle škola	
+ačfk	literal	zkratka	OBOR	200	pořadatel, zkratkou	
+famu	literal	zkratka	OBOR	200	pražská filmová škola	
+trik	lemma	film-remeslo	OBOR	150	kouzlo před kamerou	trik
+diva	lemma	film-remeslo	OBOR	150	hvězda s nároky	diva
+kult	lemma	film-zanr	OBOR	150	film se sektou diváků	kult
+rochus	literal	misto	MISTO	150	park s amfiteátrem nad městem	
+#	Block 2 — picked by hand out of local/lfs/dict/lfs_candidates.csv (corpus-mined, salience-ranked).
+#	Kept only where the bare word evokes CINEMA. Rejected from the same band because they do not:
+#	satira, klasik, ocenění, hrdinka, kultura, literatura, realita, respekt, adaptace-as-generic,
+#	plus every country name the film annotations dragged in (senegal, orinoko, ardeny, cherbourg…).
+promítač	lemma	film-remeslo	OBOR	200	člověk v kabině	promítač
+střihač	lemma	film-remeslo	OBOR	200	skládá záběry za sebe	střihač
+střižna	lemma	film-remeslo	OBRAZ	150	místnost, kde vzniká rytmus	střižn
+animace	lemma	film-remeslo	OBOR	200	obrázek po obrázku	animac
+animátor	lemma	film-remeslo	OBOR	200	rozhýbe kresbu	animátor
+kameramanka	lemma	film-remeslo	OBOR	150	žena za kamerou	kameramank
+scenáristka	lemma	film-remeslo	OBOR	150	autorka scénáře	scenáristk
+scenáristika	lemma	film-remeslo	OBOR	150	obor na FAMU	scenáristik
+dramaturgyně	lemma	festival	OBOR	150	sestavuje program	dramaturgyn
+producentka	lemma	film-remeslo	OBOR	150	shání na film peníze	producentk
+dokumentarista	lemma	film-remeslo	OBOR	150	natáčí, co se opravdu stalo	dokumentarist
+filmařka	lemma	film-remeslo	OBOR	200	dělá filmy	filmařk
+filmařina	lemma	film-remeslo	OBOR	200	tahle živnost	filmařin
+filmografie	lemma	film-remeslo	OBOR	200	seznam všeho, co natočil	filmografi
+koprodukce	lemma	film-remeslo	OBOR	150	film na dvě země	koprodukc
+postprodukce	lemma	film-remeslo	OBOR	150	až po natáčení	postprodukc
+předpremiéra	lemma	film-remeslo	OBOR	150	dřív než premiéra	předpremiér
+prvotina	lemma	film-remeslo	OBOR	150	první film autora	prvotin
+debut	lemma	film-remeslo	OBOR	150	první film autora, cizím slovem	debut
+casting	lemma	film-remeslo	OBOR	150	kdo koho bude hrát	casting
+storyboard	lemma	film-remeslo	OBOR	150	film nakreslený dopředu	storyboard
+mizanscéna	lemma	film-remeslo	OBOR	150	rozestavění před kamerou	mizanscén
+stopáž	lemma	film-remeslo	OBOR	150	kolik to trvá	stopáž
+remake	literal	film-remeslo	OBOR	150	natočeno znovu	remake
+velkofilm	lemma	film-zanr	OBOR	150	rozpočet je vidět	velkofilm
+minisérie	lemma	film-zanr	OBOR	150	pár dílů a konec	minisér
+předfilm	lemma	festival	OBOR	150	krátký před hlavním	předfilm
+kraťas	lemma	film-zanr	OBOR	200	krátký film, hovorově	kraťas
+letňák	lemma	misto	OBRAZ	200	kino pod hvězdami, hovorově	letňák
+biják	lemma	film-zanr	OBOR	200	film, hovorově	biják
+brak	lemma	film-zanr	OBOR	150	béčko, ale hrdě	brak
+bondovka	lemma	film-zanr	OBOR	150	agent 007	bondovk
+gangsterka	lemma	film-zanr	OBOR	150	klobouky a samopaly	gangsterk
+mayovka	lemma	film-zanr	OBOR	150	Vinnetou a spol.	mayovk
+groteska	lemma	film-zanr	OBOR	150	němá, a padá se v ní	grotesk
+melodrama	lemma	film-zanr	OBOR	150	pláče se u něj	melodram
+tragikomedie	lemma	film-zanr	OBOR	150	smích i pláč	tragikomedi
+krimi	literal	film-zanr	OBOR	150	kdo to udělal	krimi
+subžánr	lemma	film-zanr	OBOR	150	škatulka ve škatulce	subžánr
+foyer	literal	misto	OBRAZ	150	kde se čeká na sál	foyer
+plac	lemma	film-remeslo	OBOR	200	kde se točí	plac
+dvojrole	lemma	film-remeslo	OBOR	150	jeden herec, dvě postavy	dvojrol
+diváctvo	lemma	film-remeslo	OBOR	150	celý sál dohromady	diváctv
+divačka	lemma	film-remeslo	OBOR	150	sedí v sále	divačk
+herectví	lemma	film-remeslo	OBOR	150	tohle řemeslo	herectv
+audiovize	lemma	film-remeslo	OBOR	150	obraz i zvuk najednou	audioviz
+popkultura	lemma	film-zanr	OBOR	150	film, komiks, seriál	popkultur
+etuda	lemma	film-remeslo	OBOR	150	krátké cvičení na škole	etud
+tvůrkyně	lemma	film-remeslo	OBOR	150	autorka snímku	tvůrkyn
+klubák	lemma	festival	MISTO	150	filmový klub, hovorově	klubák
+hollywood	lemma	titul	OBOR	200	město snů	hollywood
+locarno	lemma	titul	OBOR	150	festival u jezera	locarno
+benátky	lemma	titul	OBOR	150	festival se lvem	benátk
+aula	lemma	misto	MISTO	150	školní sál, na LFŠ se v něm promítá	aula
+mír	lemma	misto	MISTO	200	hradišťské kino i opak války	Mír
+amfiteátr	lemma	misto	MISTO	150	hlediště pod širým nebem	amfiteátr
+horňácko	lemma	misto	MISTO	150	kraj za Hradištěm	horňáck
+kopanice	lemma	misto	MISTO	150	kopcovitý kus Slovácka	kopanic
+fór	lemma	film-zanr	OBOR	150	vtip, hovorově	fór
+#	Block 3 — single-word titles and directors from the 2026 programme (source local/lfs/program/program_2026.json).
+#	Only titles that a Czech cinephile recognises standing alone; plot words and multiword fragments excluded.
+sedmikrásky	literal	titul	OBOR	200	Chytilová 1966, kostýmy Krumbachová	sedmikrásk
+sedmikráska	lemma	titul	OBOR	150	květina i film Věry Chytilové	sedmikrásk
+zatmění	lemma	titul	OBOR	150	Antonioni 1962, i úkaz na obloze	zatmění
+dobrodružství	lemma	titul	OBOR	150	Antonioni 1960, zmizení na ostrově	dobrodružství
+zabriskie	literal	titul	OBOR	150	Antonioni v Údolí smrti	zabriskie
+pustina	lemma	titul	OBOR	150	Antonioniho červená, italsky rosso	pustina
+démanty	literal	titul	OBOR	200	Němcovy noci podle Lustiga	démanty
+valerie	literal	titul	OBOR	200	a týden divů, kostýmy Krumbachová	[Vv]alerie
+pianista	lemma	titul	OBOR	150	Polanski 2002, Varšava	pianist
+nájemník	lemma	titul	OBOR	150	Polanski 1976, byt v Paříži	nájemník
+kachyňa	literal	jmeno	OBOR	150	režisér Ucha	kachyň
+vávra	literal	jmeno	OBOR	150	režisér Kladiva na čarodějnice	vávra
+brynych	literal	jmeno	OBOR	150	režisér Transportu z ráje	brynych
+lipský	literal	jmeno	OBOR	150	režisér Muže z prvního století	lipský
+#	Block 4 — short cinema words, added because the grid's scarce lengths are 3-5 and the tier
+#	was thin there. Same membership test: the BARE word must evoke cinema.
+#	Rejected from the same band although they are the corpus's most frequent LFŠ tokens:
+#	sál, úvod, stan, host, hala, aula-as-generic — an attendee knows them, but with the clue
+#	covered they are festival *layout*, not festival *vocabulary*, so they would spend the
+#	objective on nothing. They get LFŠ-voiced clues from the Standard tier instead.
+štáb	lemma	film-remeslo	OBOR	200	lidi kolem kamery	štáb
+aero	literal	misto	MISTO	150	pražské klubové kino	aero
+fikce	lemma	film-zanr	OBOR	150	opak dokumentu, cizím slovem	fikce
+fraška	lemma	film-zanr	OBOR	150	přehnaná komedie	frašk
+ateliér	lemma	film-remeslo	OBOR	150	kde se točí pod střechou	ateliér
+barrandov	literal	misto	MISTO	200	pražské filmové studio	barrandov
+promítat	lemma	film-remeslo	OBOR	200	co dělá promítač	promítat
+grotesk	lemma	film-zanr	OBOR	150	němá komedie s pádem	grotesk
+tvůrce	lemma	film-remeslo	OBOR	150	kdo film udělal	tvůrce
