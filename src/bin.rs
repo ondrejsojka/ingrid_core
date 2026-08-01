@@ -141,7 +141,7 @@ struct Args {
     #[arg(long, default_value_t = false)]
     estimate_variants: bool,
 
-    /// Maximum estimator/search runtime ratio; values above 0.5 are capped
+    /// Maximum estimator/search runtime ratio; values above 1.0 are capped
     #[arg(long, default_value_t = 0.45)]
     estimate_runtime_ratio: f32,
 
@@ -153,11 +153,11 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     seed: u64,
 
-    /// Maximum variant-estimation walks; calibration selects a feasible fixed cohort
-    #[arg(long, default_value_t = 16)]
-    estimate_walks: usize,
+    /// Maximum variant-estimation walks (1-100000); measured throughput sizes each wave of the cohort
+    #[arg(long, default_value_t = 16, value_parser = clap::value_parser!(u64).range(1..=100_000))]
+    estimate_walks: u64,
 
-    /// Probability of following the incumbent value at each sampled decision
+    /// Probability of following the incumbent value at each sampled decision; must be below 1
     #[arg(long, default_value_t = 0.98)]
     estimate_guide_probability: f64,
 
@@ -263,6 +263,12 @@ fn main() -> Result<(), Error> {
     if !args.estimate_runtime_ratio.is_finite() || args.estimate_runtime_ratio < 0.0 {
         return Err(Error(
             "--estimate-runtime-ratio must be a finite nonnegative number".into(),
+        ));
+    }
+    if !(0.0..1.0).contains(&args.estimate_guide_probability) {
+        return Err(Error(
+            "--estimate-guide-probability must be in [0, 1); 1.0 would never leave the incumbent path"
+                .into(),
         ));
     }
     let normalization = args.ignore_diacritics.then_some(NormalizationSettings {
@@ -447,7 +453,7 @@ fn main() -> Result<(), Error> {
         let estimate_options = VariantEstimateOptions {
             runtime_ratio: args.estimate_runtime_ratio,
             worker_count,
-            walk_count: args.estimate_walks,
+            walk_count: args.estimate_walks as usize,
             rng_seed: args.seed,
             maximum_duration: args.estimate_max_time.map(Duration::from_secs),
             guide_probability: args.estimate_guide_probability,

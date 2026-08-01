@@ -14,6 +14,7 @@ use crate::fill_set::DistinctFillSet;
 use crate::grid_config::GridConfig;
 use crate::live_state::LiveSearchState;
 use crate::parallel_search::{canonical_fill_key, PreferredFillSuccess, PreparedSearch};
+use crate::types::WordId;
 
 use self::aggregate::{retain_known_fills, summarize, Summary};
 use self::walk::{collect_walks, RankProposal, WalkOutcome};
@@ -23,7 +24,8 @@ const MAX_WALK_COUNT: usize = 100_000;
 const MINIMUM_EFFECTIVE_SAMPLES: f64 = 1.0;
 const MINIMUM_USEFUL_BUDGET: Duration = Duration::from_millis(20);
 const DEADLINE_FRACTION: f64 = 0.9;
-/// Incumbent-path calibration underestimates mixed-proposal walk cost; factor in the bias.
+/// Fraction of the time left before the deadline that one wave may plan to consume; whatever the
+/// wave's real cost turns out to be, the next wave re-measures and resizes from the remainder.
 const COHORT_SAFETY_FACTOR: f64 = 0.5;
 const CALIBRATION_SEED_NAMESPACE: u64 = 0x4341_4c49_4252_4154; // "CALIBRAT"
 const COHORT_SEED_NAMESPACE: u64 = 0x434f_484f_5254_0000; // "COHORT"
@@ -31,11 +33,11 @@ const COHORT_SEED_NAMESPACE: u64 = 0x434f_484f_5254_0000; // "COHORT"
 /// Controls for post-search variant estimation.
 #[derive(Debug, Clone)]
 pub struct VariantEstimateOptions {
-    /// Maximum estimator/search wall-time ratio. Values above 0.5 are clamped to 0.5.
+    /// Maximum estimator/search wall-time ratio. Values above 1.0 are clamped to 1.0.
     pub runtime_ratio: f32,
     /// Number of sampling workers. `None` uses all available CPU cores.
     pub worker_count: Option<usize>,
-    /// Maximum fixed-cohort size. A short independent calibration selects a feasible count.
+    /// Maximum total cohort walks across every wave. Measured throughput sizes each wave.
     pub walk_count: usize,
     /// Seed from which deterministic per-walk random streams are derived.
     pub rng_seed: u64,
@@ -58,7 +60,7 @@ impl Default for VariantEstimateOptions {
     }
 }
 
-/// Diagnostics for one fixed cohort of sequential-importance walks.
+/// Diagnostics over the union of every cohort wave of sequential-importance walks.
 #[derive(Debug, Clone)]
 pub struct SamplingDiagnostics {
     pub walk_count: usize,
@@ -172,45 +174,41 @@ pub fn estimate_variants(
         let maximum_option_count = config.slot_options.iter().map(Vec::len).max().unwrap_or(0);
         let proposal = RankProposal::new(maximum_option_count, options.guide_probability);
         let calibration_proposal = RankProposal::new(maximum_option_count, 1.0);
-        let worker_count = resolve_worker_count(options.worker_count);
-        let calibration_start = Instant::now();
-        let calibration = collect_walks(
+        let context = WalkContext {
             config,
-            &prepared.root,
+            root: &prepared.root,
             minimum_preferred_words,
-            &incumbent_words,
+            incumbent_words: &incumbent_words,
+            worker_count: resolve_worker_count(options.worker_count),
+            rng_seed: options.rng_seed,
+        };
+        let calibration_start = Instant::now();
+        let calibration = context.collect(
             &calibration_proposal,
-            worker_count,
             1,
-            options.rng_seed,
+            0,
             CALIBRATION_SEED_NAMESPACE,
             Some(deadline),
         );
-        let calibration_elapsed = calibration_start.elapsed();
-        let cohort_walk_count = select_cohort_size(
+        let first_wave = select_cohort_size(
             calibration.len(),
-            calibration_elapsed,
+            calibration_start.elapsed(),
             deadline.saturating_duration_since(Instant::now()),
             options.walk_count,
         );
-        if cohort_walk_count == 0 {
+        if first_wave == 0 {
             return VariantEstimateOutcome::Inconclusive {
                 reason: InconclusiveReason::InsufficientBudget,
                 sampling: None,
             };
         }
 
-        let batch = collect_walks(
-            config,
-            &prepared.root,
-            minimum_preferred_words,
-            &incumbent_words,
+        let batch = collect_cohort_waves(
+            &context,
             &proposal,
-            worker_count,
-            cohort_walk_count,
-            options.rng_seed,
-            COHORT_SEED_NAMESPACE,
-            None,
+            first_wave,
+            options.walk_count,
+            deadline,
         );
         retain_known_fills(&batch, &mut known_fills);
         cohort_outcome(&batch, known_fills.len())
@@ -270,21 +268,87 @@ fn exact_root_count(
     )))
 }
 
+/// Immutable per-run inputs shared by calibration and every cohort wave.
+struct WalkContext<'a> {
+    config: &'a GridConfig<'a>,
+    root: &'a LiveSearchState,
+    minimum_preferred_words: usize,
+    incumbent_words: &'a [WordId],
+    worker_count: usize,
+    rng_seed: u64,
+}
+
+impl WalkContext<'_> {
+    fn collect(
+        &self,
+        proposal: &RankProposal,
+        walk_limit: usize,
+        start_index: usize,
+        seed_namespace: u64,
+        deadline: Option<Instant>,
+    ) -> Vec<WalkOutcome> {
+        collect_walks(
+            self.config,
+            self.root,
+            self.minimum_preferred_words,
+            self.incumbent_words,
+            proposal,
+            self.worker_count,
+            walk_limit,
+            start_index,
+            self.rng_seed,
+            seed_namespace,
+            deadline,
+        )
+    }
+}
+
+/// Draw cohort waves until the walk cap or the deadline stops them, in global walk-index order.
+///
+/// Calibration only walks the incumbent path, which reaches a leaf and therefore costs far more
+/// than the early-rejected walks that dominate a randomized cohort; sizing one fixed cohort from it
+/// leaves most of the budget unspent. Each wave instead re-measures throughput from the walks it
+/// actually completed and sizes its successor from the time still left. All waves draw from one
+/// seed stream keyed by the global walk index, so the union is exactly the cohort a single call of
+/// the same total size would have produced. Every started wave runs to completion, keeping
+/// deadline truncation out of the sample; only the next wave's size reacts to elapsed time.
+fn collect_cohort_waves(
+    context: &WalkContext<'_>,
+    proposal: &RankProposal,
+    first_wave: usize,
+    maximum_walk_count: usize,
+    deadline: Instant,
+) -> Vec<WalkOutcome> {
+    let cohort_start = Instant::now();
+    let mut walks = Vec::with_capacity(first_wave);
+    let mut wave = first_wave;
+    while wave > 0 {
+        walks.extend(context.collect(proposal, wave, walks.len(), COHORT_SEED_NAMESPACE, None));
+        wave = select_cohort_size(
+            walks.len(),
+            cohort_start.elapsed(),
+            deadline.saturating_duration_since(Instant::now()),
+            maximum_walk_count.saturating_sub(walks.len()),
+        );
+    }
+    walks
+}
+
+/// Size the next wave of walks from a completed measurement of walk cost.
 fn select_cohort_size(
-    completed_calibration_walks: usize,
-    calibration_elapsed: Duration,
+    completed_walks: usize,
+    measured_elapsed: Duration,
     remaining: Duration,
     maximum_walk_count: usize,
 ) -> usize {
-    if completed_calibration_walks == 0
-        || calibration_elapsed.is_zero()
+    if completed_walks == 0
+        || measured_elapsed.is_zero()
         || remaining.is_zero()
         || maximum_walk_count == 0
     {
         return 0;
     }
-    let observed_throughput =
-        completed_calibration_walks as f64 / calibration_elapsed.as_secs_f64();
+    let observed_throughput = completed_walks as f64 / measured_elapsed.as_secs_f64();
     let feasible = (observed_throughput * remaining.as_secs_f64() * COHORT_SAFETY_FACTOR)
         .floor()
         .min(maximum_walk_count as f64);
@@ -300,7 +364,7 @@ fn valid_options(options: &VariantEstimateOptions) -> bool {
 }
 
 fn estimator_budget(search_elapsed: Duration, options: &VariantEstimateOptions) -> Duration {
-    let ratio_budget = search_elapsed.mul_f64(f64::from(options.runtime_ratio).clamp(0.0, 0.5));
+    let ratio_budget = search_elapsed.mul_f64(f64::from(options.runtime_ratio).clamp(0.0, 1.0));
     options
         .maximum_duration
         .map_or(ratio_budget, |maximum| ratio_budget.min(maximum))

@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::walk::{collect_walks, RankProposal, WalkOutcome};
 use super::{
@@ -12,6 +12,7 @@ use crate::grid_config::{
     generate_grid_config_from_template_string, Choice, GridConfig, OwnedGridConfig,
 };
 use crate::parallel_search::{canonical_fill_key, prepare_search, PreferredFillSuccess};
+use crate::types::WordId;
 use crate::word_list::{WordList, WordListSourceConfig, WordListSourceConfigProvider};
 
 fn source(id: &str, words: &[&str]) -> WordListSourceConfig {
@@ -90,11 +91,13 @@ fn options(walk_count: usize, seed: u64) -> VariantEstimateOptions {
     }
 }
 
-fn fixed_cohort(
+/// Collect one logical cohort as the given sequence of waves, numbering walks globally the way the
+/// estimator's wave loop does.
+fn cohort_waves(
     config: &GridConfig,
     prepared: &crate::parallel_search::PreparedSearch,
     incumbent: &PreferredFillSuccess,
-    walk_count: usize,
+    waves: &[usize],
     seed: u64,
     worker_count: usize,
 ) -> Vec<WalkOutcome> {
@@ -104,20 +107,88 @@ fn fixed_cohort(
         config.slot_options.iter().map(Vec::len).max().unwrap_or(0),
         0.8,
     );
-    let batch = collect_walks(
-        config,
-        &prepared.root,
-        incumbent.preferred_word_count,
-        &incumbent_words,
-        &proposal,
-        worker_count,
-        walk_count,
-        seed,
-        super::COHORT_SEED_NAMESPACE,
-        None,
-    );
-    assert_eq!(batch.len(), walk_count);
+    let mut batch = Vec::new();
+    for &wave in waves {
+        batch.extend(collect_walks(
+            config,
+            &prepared.root,
+            incumbent.preferred_word_count,
+            &incumbent_words,
+            &proposal,
+            worker_count,
+            wave,
+            batch.len(),
+            seed,
+            super::COHORT_SEED_NAMESPACE,
+            None,
+        ));
+    }
+    assert_eq!(batch.len(), waves.iter().sum::<usize>());
     batch
+}
+
+fn fixed_cohort(
+    config: &GridConfig,
+    prepared: &crate::parallel_search::PreparedSearch,
+    incumbent: &PreferredFillSuccess,
+    walk_count: usize,
+    seed: u64,
+    worker_count: usize,
+) -> Vec<WalkOutcome> {
+    cohort_waves(
+        config,
+        prepared,
+        incumbent,
+        &[walk_count],
+        seed,
+        worker_count,
+    )
+}
+
+/// Per-walk identity, so two cohorts drawn from the same seed stream can be compared walk by walk.
+fn walk_keys(batch: &[WalkOutcome]) -> Vec<Option<(u64, Box<[WordId]>)>> {
+    batch
+        .iter()
+        .map(|outcome| match outcome {
+            WalkOutcome::Accepted { log2_weight, fill } => {
+                Some((log2_weight.to_bits(), fill.clone()))
+            }
+            WalkOutcome::Rejected => None,
+        })
+        .collect()
+}
+
+fn assert_identical_estimates(first: &VariantEstimateOutcome, second: &VariantEstimateOutcome) {
+    match (first, second) {
+        (
+            VariantEstimateOutcome::Estimated {
+                count: first_count,
+                slack_bits: first_slack_bits,
+                interval_bits: first_interval_bits,
+                sampling: first_sampling,
+            },
+            VariantEstimateOutcome::Estimated {
+                count: second_count,
+                slack_bits: second_slack_bits,
+                interval_bits: second_interval_bits,
+                sampling: second_sampling,
+            },
+        ) => {
+            assert_eq!(first_count, second_count);
+            assert_eq!(first_slack_bits, second_slack_bits);
+            assert_eq!(first_interval_bits, second_interval_bits);
+            assert_eq!(first_sampling.walk_count, second_sampling.walk_count);
+            assert_eq!(
+                first_sampling.accepted_walk_count,
+                second_sampling.accepted_walk_count
+            );
+            assert_eq!(
+                first_sampling.effective_sample_size,
+                second_sampling.effective_sample_size
+            );
+        }
+        _ => panic!("both cohorts should produce estimates"),
+    }
 }
 
 #[test]
@@ -260,36 +331,72 @@ fn fixed_seed_is_reproducible_across_worker_counts() {
         &fixed_cohort(&config_ref, &prepared, &result, 1_024, 99, 4),
         1,
     );
-    match (first, second) {
-        (
-            VariantEstimateOutcome::Estimated {
-                count: first_count,
-                slack_bits: first_slack_bits,
-                interval_bits: first_interval_bits,
-                sampling: first_sampling,
+    assert_identical_estimates(&first, &second);
+}
+
+#[test]
+fn wave_split_cohorts_match_the_single_wave_cohort() {
+    let config =
+        generate_grid_config_from_template_string(word_list(&["cat"], &["dog"]), "...#...\n", 0);
+    let config_ref = config.to_config_ref();
+    let prepared = prepare_search(&config_ref).unwrap();
+    let result = incumbent(
+        vec![
+            Choice {
+                slot_id: 0,
+                word_id: word_id(&config, "cat"),
             },
-            VariantEstimateOutcome::Estimated {
-                count: second_count,
-                slack_bits: second_slack_bits,
-                interval_bits: second_interval_bits,
-                sampling: second_sampling,
+            Choice {
+                slot_id: 1,
+                word_id: word_id(&config, "dog"),
             },
-        ) => {
-            assert_eq!(first_count, second_count);
-            assert_eq!(first_slack_bits, second_slack_bits);
-            assert_eq!(first_interval_bits, second_interval_bits);
-            assert_eq!(first_sampling.walk_count, second_sampling.walk_count);
-            assert_eq!(
-                first_sampling.accepted_walk_count,
-                second_sampling.accepted_walk_count
-            );
-            assert_eq!(
-                first_sampling.effective_sample_size,
-                second_sampling.effective_sample_size
-            );
-        }
-        _ => panic!("both fixed cohorts should produce estimates"),
-    }
+        ],
+        0,
+    );
+
+    // Explicit wave boundaries: walk i keeps its own stream, so both cohorts agree walk by walk.
+    let single = fixed_cohort(&config_ref, &prepared, &result, 900, 17, 2);
+    let split = cohort_waves(&config_ref, &prepared, &result, &[16, 284, 600], 17, 2);
+    assert_eq!(walk_keys(&single), walk_keys(&split));
+    assert_identical_estimates(
+        &super::cohort_outcome(&single, 1),
+        &super::cohort_outcome(&split, 1),
+    );
+
+    // The estimator's own wave loop: whatever split the clock produces, the union is still the
+    // cohort a single call of that size would have drawn.
+    let incumbent_words =
+        canonical_fill_key(&config_ref, &result.fill.choices).expect("complete incumbent");
+    let proposal = RankProposal::new(
+        config_ref.slot_options.iter().map(Vec::len).max().unwrap_or(0),
+        0.8,
+    );
+    let context = super::WalkContext {
+        config: &config_ref,
+        root: &prepared.root,
+        minimum_preferred_words: result.preferred_word_count,
+        incumbent_words: &incumbent_words,
+        worker_count: 2,
+        rng_seed: 17,
+    };
+    let waved = super::collect_cohort_waves(
+        &context,
+        &proposal,
+        8,
+        4_096,
+        Instant::now() + Duration::from_millis(500),
+    );
+    assert!(
+        waved.len() > 8,
+        "the remaining budget should have funded another wave, got {} walks",
+        waved.len()
+    );
+    let refilled = fixed_cohort(&config_ref, &prepared, &result, waved.len(), 17, 2);
+    assert_eq!(walk_keys(&waved), walk_keys(&refilled));
+    assert_identical_estimates(
+        &super::cohort_outcome(&waved, 1),
+        &super::cohort_outcome(&refilled, 1),
+    );
 }
 
 #[test]
@@ -476,9 +583,14 @@ fn runtime_budget_is_capped_by_ratio_and_absolute_limit() {
     configured.maximum_duration = None;
     assert_eq!(
         estimator_budget(Duration::from_secs(10), &configured),
-        Duration::from_secs(5)
+        Duration::from_secs(10)
     );
     configured.runtime_ratio = 0.45;
+    let default_ratio_budget = estimator_budget(Duration::from_secs(10), &configured);
+    assert!(
+        (default_ratio_budget.as_secs_f64() - 4.5).abs() < 1e-3,
+        "default ratio budget was {default_ratio_budget:?}"
+    );
     configured.maximum_duration = Some(Duration::from_secs(2));
     assert_eq!(
         estimator_budget(Duration::from_secs(10), &configured),

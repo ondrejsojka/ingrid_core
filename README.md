@@ -66,16 +66,23 @@ leaves are inverse-probability weighted, so the incumbent guide improves accepta
 excluding other live values.
 
 The estimator budget targets 45% of the completed search time.
-`--estimate-runtime-ratio` changes that target but is limited to 50%, and
-`--estimate-max-time` caps the target used for cohort selection. One separately seeded,
+`--estimate-runtime-ratio` changes that target but is limited to 100%, and
+`--estimate-max-time` caps the target used for wave selection. One separately seeded,
 deterministic incumbent-path walk measures full-depth traversal cost but contributes no weight or
-fill to the report. A safety margin converts that measurement into a fixed cohort no larger than
-`--estimate-walks` (16 by default).
+fill to the report. A safety margin converts that measurement into the first wave of randomized
+walks.
 
-Once selected, the final randomized cohort runs to completion rather than introducing
-deadline-truncation bias. Consequently, slower exploratory walks and cleanup may exceed the target
-budget. Numbered final walks remain deterministic; machine load can change only the automatically
-selected cohort size.
+Because most randomized walks are rejected long before full depth, that first wave is much cheaper
+than the calibration predicts, so the estimator keeps refilling: after every wave it recomputes
+throughput from the walks it actually completed and sizes the next wave from the time still left
+before the deadline. Waves stop once they reach `--estimate-walks` in total (16 by default), the
+budget is spent, or the next wave would be empty. All waves draw from one seed stream keyed by the
+global walk index, so a given seed produces the same walk i however the waves are split, and the
+union is exactly the cohort a single pass of that size would have drawn.
+
+Every started wave runs to completion rather than introducing deadline-truncation bias.
+Consequently, slower exploratory walks and cleanup may exceed the target budget. Numbered walks
+remain deterministic; machine load can change only the automatically selected wave sizes.
 
 Successful multicore search workers and completed estimator walks contribute distinct validated
 fills to the certified lower bound. Search fills are not importance samples because their proposal
@@ -122,13 +129,13 @@ Options:
       --estimate-variants
           Estimate how many distinct fills are at least as Preferred-heavy as the returned fill
       --estimate-runtime-ratio <ESTIMATE_RUNTIME_RATIO>
-          Maximum estimator/search runtime ratio; values above 0.5 are capped [default: 0.45]
+          Maximum estimator/search runtime ratio; values above 1.0 are capped [default: 0.45]
       --estimate-max-time <ESTIMATE_MAX_TIME>
           Absolute estimator time cap in seconds
       --seed <SEED>
           Random seed for search workers and variant-estimation walks [default: 0]
       --estimate-walks <ESTIMATE_WALKS>
-          Maximum variant-estimation walks; calibration selects a feasible fixed cohort [default: 16]
+          Maximum variant-estimation walks; measured throughput sizes each wave of the cohort [default: 16]
       --estimate-guide-probability <ESTIMATE_GUIDE_PROBABILITY>
           Probability of following the incumbent value at each sampled decision [default: 0.98]
   -t, --time

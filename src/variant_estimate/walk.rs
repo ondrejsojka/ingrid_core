@@ -84,6 +84,10 @@ impl RankProposal {
     }
 }
 
+/// Run `walk_limit` walks numbered `start_index..start_index + walk_limit`.
+///
+/// Each walk's stream is keyed by its global index, so splitting one logical cohort into several
+/// calls with increasing offsets reproduces the single-call outcome sequence exactly.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_walks(
     config: &GridConfig,
@@ -93,6 +97,7 @@ pub(super) fn collect_walks(
     proposal: &RankProposal,
     worker_count: usize,
     walk_limit: usize,
+    start_index: usize,
     rng_seed: u64,
     seed_namespace: u64,
     deadline: Option<Instant>,
@@ -111,12 +116,13 @@ pub(super) fn collect_walks(
                 let mut state = root.fork(config);
                 let mut batch = Vec::with_capacity(RESULT_BATCH_SIZE);
                 loop {
-                    let index = next_index.fetch_add(1, Ordering::Relaxed);
-                    if index >= walk_limit
+                    let offset = next_index.fetch_add(1, Ordering::Relaxed);
+                    if offset >= walk_limit
                         || deadline.is_some_and(|deadline| Instant::now() >= deadline)
                     {
                         break;
                     }
+                    let index = start_index + offset;
                     let mut rng = SmallRng::seed_from_u64(splitmix64(
                         rng_seed ^ seed_namespace ^ index as u64,
                     ));
