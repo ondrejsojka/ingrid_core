@@ -48,18 +48,24 @@ def test_rows_that_would_reframe_the_request_are_refused():
         raise AssertionError("an all-blank grid should not be accepted")
 
 
-class _FakeOracle:
-    """Sleeps for the requested time and records that it started."""
+class _Gate:
+    """One probe's handshake: the test waits for `started` and decides when `release` happens."""
 
-    def __init__(self, started, lock):
-        self.started = started
-        self.lock = lock
+    def __init__(self, name, state="unknown"):
+        self.name = name
+        self.state = state
+        self.started = threading.Event()
+        self.release = threading.Event()
 
-    def probe(self, grid, ms=None, want_fill=False):
-        with self.lock:
-            self.started.append(grid["name"])
-        time.sleep(grid["sleep"])
-        return Verdict(grid["state"], 1, 1, 0, 0, 0)
+    def item(self):
+        return (self.name, self)
+
+
+class _GatedOracle:
+    def probe(self, gate, ms=None, want_fill=False):
+        gate.started.set()
+        assert gate.release.wait(timeout=5), f"{gate.name} was never released"
+        return Verdict(gate.state, 1, 1, 0, 0, 0)
 
     def close(self):
         pass
@@ -67,82 +73,197 @@ class _FakeOracle:
 
 class _FakePool(OraclePool):
     def __init__(self, jobs):
-        self.started: list[str] = []
-        lock = threading.Lock()
         self._free = queue.Queue()
-        self._all = [_FakeOracle(self.started, lock) for _ in range(jobs)]
+        self._all = [_GatedOracle() for _ in range(jobs)]
         for oracle in self._all:
             self._free.put(oracle)
 
 
-def _run(jobs, specs, stop_on=None, consumer_delay=0.0):
-    pool = _FakePool(jobs)
-    items = [(name, {"name": name, "sleep": sleep, "state": state}) for name, sleep, state in specs]
-    started_at = time.time()
-    yielded = []
-    for key, _ in pool.probe_many(items, stop_on=stop_on):
-        yielded.append(key)
-        if consumer_delay:
-            time.sleep(consumer_delay)
-    return time.time() - started_at, yielded, pool.started
+def _await(event, what):
+    assert event.wait(timeout=5), f"timed out waiting for {what}"
+
+
+def _settle():
+    """Give any (incorrectly) eager worker a chance to start before we assert it did not."""
+    time.sleep(0.05)
+
+
+class _Pump:
+    """Drives the generator on its own thread.
+
+    `probe_many` is a generator, so nothing at all happens until someone asks for the first
+    answer; a test that wants to watch the window fill has to be pulling. `hold`, when given, is
+    waited on after each answer is handed over, which parks the generator mid-yield exactly where
+    a slow caller would park it.
+    """
+
+    def __init__(self, answers, hold=None):
+        self.answers: queue.Queue = queue.Queue()
+        self.finished = threading.Event()
+        self.error: BaseException | None = None
+        self._hold = hold
+        self._thread = threading.Thread(target=self._run, args=(answers,), daemon=True)
+        self._thread.start()
+
+    def _run(self, answers):
+        try:
+            for answer in answers:
+                self.answers.put(answer)
+                if self._hold is not None:
+                    assert self._hold.wait(timeout=5), "hold was never released"
+        except BaseException as error:  # noqa: BLE001 - surfaced by `finish`
+            self.error = error
+        finally:
+            self.finished.set()
+
+    def next(self):
+        return self.answers.get(timeout=5)
+
+    def finish(self):
+        _await(self.finished, "the generator to finish")
+        self._thread.join(timeout=5)
+        if self.error is not None:
+            raise self.error
+        rest = []
+        while True:
+            try:
+                rest.append(self.answers.get_nowait())
+            except queue.Empty:
+                return rest
 
 
 _MATCH = lambda verdict: verdict.fillable  # noqa: E731
 
 
-def test_no_probe_starts_after_a_match_is_observed():
-    # Two workers: `fast` matches at 50 ms while `slow` is still running, so `extra` must never be
-    # picked up. The generator returning a credit before evaluating stop_on would start it.
-    _, yielded, started = _run(
-        2,
-        [("fast", 0.05, "fillable"), ("slow", 0.4, "unknown"), ("extra", 0.01, "unknown")],
-        _MATCH,
-    )
-    assert yielded == ["fast"], yielded
-    assert started == ["fast", "slow"], started
+def test_the_window_holds_exactly_jobs_probes():
+    gates = [_Gate(f"g{i}") for i in range(5)]
+    pool = _FakePool(2)
+    pump = _Pump(pool.probe_many([gate.item() for gate in gates]))
+    _await(gates[0].started, "g0")
+    _await(gates[1].started, "g1")
+    _settle()
+    assert not gates[2].started.is_set(), "a third probe started with only two workers"
+    for gate in gates:
+        gate.release.set()
+    seen = [pump.next()[0]] + [key for key, _ in pump.finish()]
+    assert sorted(seen) == sorted(gate.name for gate in gates)
+    assert all(gate.started.is_set() for gate in gates), "not every item was probed"
+
+
+def test_no_probe_starts_after_a_match():
+    # Two workers: `hit` matches while `busy` is still running, so `never` must not be picked up.
+    hit, busy, never = _Gate("hit", "fillable"), _Gate("busy"), _Gate("never")
+    pool = _FakePool(2)
+    pump = _Pump(pool.probe_many([g.item() for g in (hit, busy, never)], stop_on=_MATCH))
+    _await(hit.started, "hit")
+    _await(busy.started, "busy")
+    _settle()
+    assert not never.started.is_set(), "the window overflowed"
+
+    hit.release.set()
+    key, verdict = pump.next()
+    assert (key, verdict.state) == ("hit", "fillable")
+    _settle()
+    assert not never.started.is_set(), "a probe was started after the match"
+
+    # Draining the in-flight sibling ends the run; still nothing new begins.
+    busy.release.set()
+    assert pump.finish() == []
+    assert not never.started.is_set(), "the drain started fresh work"
 
 
 def test_no_probe_starts_while_the_caller_holds_the_generator():
-    # The decision must be recorded before the value is yielded, not after the caller resumes us.
-    _, yielded, started = _run(
-        2,
-        [("fast", 0.05, "fillable"), ("slow", 0.3, "unknown"), ("extra", 0.01, "unknown")],
-        _MATCH,
-        consumer_delay=0.15,
+    # `hold` parks the generator mid-yield, exactly where a caller doing real work parks it.
+    hit, busy, never = _Gate("hit", "fillable"), _Gate("busy"), _Gate("never")
+    hold = threading.Event()
+    pool = _FakePool(2)
+    pump = _Pump(
+        pool.probe_many([g.item() for g in (hit, busy, never)], stop_on=_MATCH), hold=hold
     )
-    assert yielded == ["fast"], yielded
-    assert "extra" not in started, started
+    _await(hit.started, "hit")
+    _await(busy.started, "busy")
+    hit.release.set()
+    assert pump.next()[0] == "hit"
+    _settle()
+    _settle()
+    assert not never.started.is_set(), "a probe started while the caller held the generator"
+    hold.set()
+    busy.release.set()
+    assert pump.finish() == []
 
 
-def test_a_match_costs_one_in_flight_probe_not_the_remaining_work():
-    elapsed, _, started = _run(
-        2, [("fast", 0.05, "fillable")] + [(f"slow{i}", 0.1, "unknown") for i in range(9)], _MATCH
-    )
-    assert len(started) <= 2, started
-    assert elapsed < 0.25, elapsed
+def test_a_non_matching_answer_is_delivered_before_more_work_is_pulled():
+    # A finished answer must not be held hostage to a producer that has not produced yet.
+    first, second = _Gate("first"), _Gate("second")
+    keep_producing = threading.Event()
+
+    def producer():
+        yield first.item()
+        assert keep_producing.wait(timeout=5), "producer was never released"
+        yield second.item()
+
+    pool = _FakePool(1)
+    pump = _Pump(pool.probe_many(producer()))
+    # Only one item was pulled to fill the one-deep window, so the producer is still parked.
+    _await(first.started, "the first probe")
+    assert not keep_producing.is_set(), "the test released the producer too early"
+    first.release.set()
+    assert pump.next()[0] == "first", "the answer waited on the producer"
+
+    keep_producing.set()
+    second.release.set()
+    assert [key for key, _ in pump.finish()] == ["second"]
+
+
+def test_an_endless_producer_is_fine():
+    gates = {}
+
+    def producer():
+        index = 0
+        while True:
+            gate = _Gate(f"g{index}", "fillable" if index == 3 else "unknown")
+            gate.release.set()  # these do not need to be held open
+            gates[gate.name] = gate
+            yield gate.item()
+            index += 1
+
+    pool = _FakePool(2)
+    seen = [key for key, _ in pool.probe_many(producer(), stop_on=_MATCH)]
+    assert seen[-1] == "g3", seen
+    assert len(gates) <= len(seen) + 2, f"pulled {len(gates)} items for {len(seen)} answers"
 
 
 def test_without_a_match_every_item_is_probed():
-    _, yielded, started = _run(3, [(f"i{i}", 0.01, "unknown") for i in range(9)])
-    assert len(yielded) == 9 and len(started) == 9
+    gates = [_Gate(f"g{i}") for i in range(9)]
+    for gate in gates:
+        gate.release.set()
+    pool = _FakePool(3)
+    seen = [key for key, _ in pool.probe_many([gate.item() for gate in gates])]
+    assert sorted(seen) == sorted(gate.name for gate in gates)
 
 
 def test_more_workers_than_items_is_fine():
-    _, yielded, started = _run(4, [("a", 0.01, "unknown"), ("b", 0.01, "unknown")], _MATCH)
-    assert sorted(yielded) == ["a", "b"] and len(started) == 2
+    gates = [_Gate("a"), _Gate("b")]
+    for gate in gates:
+        gate.release.set()
+    pool = _FakePool(4)
+    seen = [key for key, _ in pool.probe_many([gate.item() for gate in gates], stop_on=_MATCH)]
+    assert sorted(seen) == ["a", "b"]
 
 
 def test_a_worker_error_reaches_the_caller():
-    class _Boom(_FakeOracle):
+    class _Boom(_GatedOracle):
         def probe(self, *args, **kwargs):
             raise RuntimeError("boom")
 
     pool = _FakePool(1)
-    pool._all = [_Boom(pool.started, threading.Lock())]
+    pool._all = [_Boom()]
     pool._free = queue.Queue()
     pool._free.put(pool._all[0])
+    gate = _Gate("a")
+    gate.release.set()
     try:
-        list(pool.probe_many([("a", {"name": "a", "sleep": 0, "state": "unknown"})]))
+        list(pool.probe_many([gate.item()]))
     except RuntimeError as error:
         assert str(error) == "boom"
     else:

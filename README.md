@@ -178,7 +178,7 @@ inverts that: load once, then answer one probe per line of stdin.
 ```
 $ ingrid_core --serve --wordlist standard.dict --preferred-wordlist theme.dict \
     --min-score 33 --max-shared-substring 5 --dupe-exempt-preferred
-ready words=160469 max_length=21 min_score=33 probe_ms=0 blocked=0 load_ms=460
+ready words=160469 max_length=21 min_score=33 probe_ms=0 blocked=0 diacritics=0 load_ms=460
 ...#...#...#.../...#...#...#.../.......#.......
 unknown slots=88 min_domain=1189 setup_us=19842 ac_us=35913 us=62901
 ```

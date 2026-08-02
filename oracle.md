@@ -91,6 +91,23 @@ blank rows and keeps interior ones, so a malformed grid reaches the engine and c
 `error row 1 is empty` instead of being quietly reshaped client-side. It also refuses a row
 containing `/` or whitespace, which would reframe the request on the wire.
 
+## One normalization policy, and it belongs to the corpus
+
+A template's fixed letters have to be spelled the way the dictionary spelled its entries, or the
+oracle looks up a glyph that cannot exist and answers `unfillable` — a verdict callers are told is
+a proof — about a grid that fills. That makes the diacritic policy corpus state, not an oracle
+setting, so `Oracle::new` reads it off the enabled sources with `WordList::converts_diacritics`
+and fails outright when they disagree. There is no second copy to get wrong. `--serve` reports
+the derived answer in its banner as `diacritics=0|1`.
+
+The other half is *when* normalization runs. It runs after parsing, on letter cells only, via
+`ParsedTemplate::fold_diacritics`. Running a dictionary normalizer over whole template rows means
+pointing a word sanitiser at grid syntax: with `strip_punctuation` — a perfectly ordinary setting
+for a source built from prose — every `#` and `.` is punctuation, and the entire template
+dissolves into nothing. `word_list::normalize_grid_letter` is the narrow function that exists for
+this: case and diacritic folding, no stripping, one character at a time. A cell whose letter folds
+away to nothing is a `TemplateError::UnfoldableLetter`, not a silently empty square.
+
 ## Two surfaces
 
 ### `ingrid_core::oracle::Oracle` (library)
@@ -100,10 +117,9 @@ use ingrid_core::oracle::{Oracle, OracleOptions, ProbeOptions, Verdict};
 
 let mut oracle = Oracle::new(word_list, OracleOptions {
     min_score: 33,
-    normalization: None,
     default_probe_time: Duration::ZERO,   // arc consistency only
     seed: 0,
-});
+})?;                                      // fails if the sources disagree about diacritics
 
 match oracle.probe(template)?.verdict {
     Verdict::Unfillable => { /* proof */ }
@@ -113,8 +129,8 @@ match oracle.probe(template)?.verdict {
 ```
 
 `Oracle::new` takes an already-configured `WordList`, because everything that varies per campaign —
-sources, tiers, blocklist, `max_shared_substring`, `exempt_preferred_dupes` — is a property of the
-list and is therefore fixed by construction. Two policies means two oracles.
+sources, tiers, blocklist, `max_shared_substring`, `exempt_preferred_dupes`, diacritic folding — is
+a property of the list and is therefore fixed by construction. Two policies means two oracles.
 
 `Probe` carries the verdict plus what is free to collect: `slot_count`, `min_domain`, `setup_time`,
 `arc_consistency_time`, `elapsed`, and the rendered `fill` when requested.
@@ -138,7 +154,7 @@ length (default 21).
 **Handshake.** One line on stdout once loading is done. Read it before sending anything.
 
 ```
-ready words=160469 max_length=21 min_score=33 probe_ms=0 blocked=0 load_ms=460
+ready words=160469 max_length=21 min_score=33 probe_ms=0 blocked=0 diacritics=0 load_ms=460
 ```
 
 **Request.** One line, whitespace-separated. First token is the template with rows joined by `/`;
@@ -189,25 +205,30 @@ thread, the banner read has a timeout, and a child that never becomes ready is k
 `Oracle(max_length=2)` reports `stderr: Error: Word list is empty, exit status 1`, not "no output".
 
 `OraclePool(jobs=N, ...)` starts N processes — N copies of the dictionary, N probes at once — and
-`pool.probe_many(items, stop_on=...)` yields `(key, verdict)` as answers arrive. Its contract is
-precise, because the protocol cannot abandon a probe already running:
+`pool.probe_many(items, stop_on=...)` yields `(key, verdict)` as answers arrive. It is a rolling
+window over a `ThreadPoolExecutor`: fill the window, wait for one answer, decide, submit exactly
+one replacement. Everything below falls out of there being one place in that loop where work
+begins:
 
-- At most `jobs` probes are in flight, because a worker may only take the next item against a
-  credit the generator issues per answer consumed.
-- **No probe is started once the match has been observed.** The generator evaluates `stop_on` and
-  records the stop *before* it releases a credit and before it yields; a worker's item handout and
-  the stop flag are decided under the same lock. Releasing the credit first, or deciding only
-  after the caller resumes the generator, both leave a window in which a worker picks up more work
-  while the answer is already known — the first version of this did exactly that.
-- On a match the generator drains the at most `jobs - 1` probes still running, discards their
-  answers, and returns. Its runtime after a match is one probe, not the remaining work. Nothing
+- At most `jobs` probes are in flight, and `items` is pulled one element at a time, so memory is
+  `O(jobs)` and an endless generator of candidate placements is a legitimate argument. An earlier
+  version drained the whole iterable before starting anything, which stalled the first probe
+  behind a slow producer and would have hung forever on an infinite one.
+- **No probe is started once an answer matches**, and none is started while the caller is between
+  answers either: the replacement is submitted only after an answer has been delivered and did not
+  match.
+- A finished answer is never held back waiting on the producer, because the pull happens after the
+  yield rather than before it.
+- On a match the at most `jobs - 1` probes still running are drained, their answers discarded, and
+  the generator returns. Its runtime after a match is one probe, not the remaining work. Nothing
   here is described as cancellation, because none of it is.
 
-`scripts/test_oracle_client.py` holds all of this down against a fake pool with no binary
-involved: 10 items of 100 ms behind a 50 ms match at `jobs=2` starts 2 probes and takes 101 ms,
-and a caller that sleeps 150 ms inside the loop after the match still starts nothing new. The
-degenerate case of one 50 ms match beside one 500 ms sibling still takes 501 ms; both were already
-running, and that is the floor, not a bug.
+`scripts/test_oracle_client.py` holds all of this down against a fake pool with no binary and no
+timing assertions: each fake probe blocks on an event the test releases, so "the window held two
+probes", "nothing started after the match", "nothing started while the caller held the generator"
+and "the answer arrived before the producer was asked again" are all decided by handshakes rather
+than by sleeps. The laziness test hangs, rather than merely slowing down, against an eager
+implementation.
 
 Run the client directly to probe grid files: `python3 scripts/oracle.py grid.txt --wordlist
 std.dict --probe-ms 500 --fill`. Exit status 1 means at least one grid was proven unfillable, 2

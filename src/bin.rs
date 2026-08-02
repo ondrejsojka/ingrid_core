@@ -409,15 +409,17 @@ fn fill_once(args: &Args, normalization: Option<NormalizationSettings>) -> Resul
         return Err(Error("--max-length only applies to --serve".into()));
     }
     let raw_grid_content = fs::read_to_string(grid_path)
-        .map_err(|_| Error(format!("Couldn't read file '{grid_path}'")))?
-        .trim()
-        .lines()
-        .map(|line| normalize_word(line.trim(), &normalization))
-        .collect::<Vec<_>>()
-        .join("\n");
+        .map_err(|_| Error(format!("Couldn't read file '{grid_path}'")))?;
 
-    let template = ParsedTemplate::parse(&raw_grid_content)
+    // Parse the grid syntax first, then fold only its fixed letters. Running the dictionary
+    // normalizer over whole rows would put `#` and `.` through a sanitiser built for word content.
+    let mut template = ParsedTemplate::parse(&raw_grid_content)
         .map_err(|error| Error(format!("Invalid grid: {error}")))?;
+    if args.ignore_diacritics {
+        template
+            .fold_diacritics()
+            .map_err(|error| Error(format!("Invalid grid: {error}")))?;
+    }
     let max_side = template.width.max(template.height);
 
     let start = Instant::now();
@@ -585,23 +587,24 @@ fn serve(args: &Args, normalization: Option<NormalizationSettings>) -> Result<()
         word_list,
         OracleOptions {
             min_score: args.min_score,
-            normalization,
             default_probe_time: Duration::from_millis(args.probe_time),
             seed: args.seed,
         },
-    );
+    )
+    .map_err(|conflict| Error(conflict.to_string()))?;
     let load_time = start.elapsed();
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
     writeln!(
         out,
-        "ready words={} max_length={} min_score={} probe_ms={} blocked={} load_ms={}",
+        "ready words={} max_length={} min_score={} probe_ms={} blocked={} diacritics={} load_ms={}",
         oracle.visible_word_count(),
         oracle.max_slot_length(),
         args.min_score,
         args.probe_time,
         blocked_word_count.unwrap_or(0),
+        u8::from(oracle.converts_diacritics()),
         load_time.as_millis(),
     )
     .map_err(serve_io_error)?;

@@ -95,6 +95,48 @@ pub fn normalize_word(canonical: &str, settings: &Option<NormalizationSettings>)
     normalized.collect()
 }
 
+/// Fold one grid cell's fixed letter the way the dictionary folded the same character.
+///
+/// This is deliberately *not* [`normalize_word`]. A template row is grid syntax, and running a
+/// dictionary sanitiser across it strips the `#` and `.` that carry the structure — with
+/// `strip_punctuation` the whole row disappears. Only letter cells reach this, and only case and
+/// diacritic folding apply, because punctuation stripping decides which dictionary entries exist
+/// rather than which glyph a grid cell holds.
+///
+/// Returns `None` when the character folds away to nothing, which no grid cell legitimately does.
+#[must_use]
+pub fn normalize_grid_letter(letter: char, convert_diacritics: bool) -> Option<char> {
+    let lowercased: String = letter.to_lowercase().collect();
+    let folded: String = if convert_diacritics {
+        lowercased
+            .nfd()
+            .filter(|c| !c.is_mark_nonspacing())
+            .collect()
+    } else {
+        lowercased.nfc().collect()
+    };
+    folded.chars().next()
+}
+
+/// The enabled word list sources disagree about whether accented letters are folded, so there is
+/// no single policy for anything outside the dictionary to match against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiacriticPolicyConflict {
+    pub folding: Vec<String>,
+    pub verbatim: Vec<String>,
+}
+
+impl fmt::Display for DiacriticPolicyConflict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "sources disagree about diacritics: [{}] fold accented letters, [{}] keep them",
+            self.folding.join(", "),
+            self.verbatim.join(", ")
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum WordListError {
     InvalidPath(String),
@@ -549,6 +591,37 @@ impl WordList {
                 || self.add_hidden_word(normalized_word),
                 |word_id| (normalized_word.chars().count(), word_id),
             )
+    }
+
+    /// Whether the enabled sources folded accented letters into their unaccented forms.
+    ///
+    /// Anything that has to match a character against this dictionary — the fixed letters in a
+    /// grid, most obviously — needs the same answer the dictionary itself used, so it is derived
+    /// here rather than configured a second time somewhere else. A second copy of the policy is a
+    /// way to get a *proof* of unfillability out of a grid that fills perfectly well.
+    ///
+    /// Sources that disagree have no single answer, and saying so beats picking one.
+    pub fn converts_diacritics(&self) -> Result<bool, DiacriticPolicyConflict> {
+        let (folding, verbatim): (Vec<_>, Vec<_>) = self
+            .source_configs
+            .iter()
+            .filter(|source| source.enabled)
+            .partition(|source| {
+                source
+                    .normalization
+                    .as_ref()
+                    .is_some_and(|settings| settings.convert_diacritics)
+            });
+        if folding.is_empty() {
+            return Ok(false);
+        }
+        if verbatim.is_empty() {
+            return Ok(true);
+        }
+        Err(DiacriticPolicyConflict {
+            folding: folding.iter().map(|source| source.id.clone()).collect(),
+            verbatim: verbatim.iter().map(|source| source.id.clone()).collect(),
+        })
     }
 
     /// Record the current size of the list so that entries added afterwards can be removed again.

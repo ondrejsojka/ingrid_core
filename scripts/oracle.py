@@ -42,6 +42,7 @@ import shlex
 import subprocess
 import sys
 import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -348,94 +349,54 @@ class OraclePool:
             self._free.put(oracle)
 
     def probe_many(self, items, ms=None, want_fill=False, stop_on=None):
-        """Probe `(key, grid)` pairs, yielding `(key, verdict)` as answers arrive.
+        """Probe `(key, grid)` pairs lazily, yielding `(key, verdict)` as answers arrive.
 
-        At most `jobs` probes are in flight at any moment, and once `stop_on` matches an answer,
-        **no further probe is started**. Two mechanisms together give that: a worker may only take
-        the next item against a credit this generator hands out per answer consumed, and the match
-        is evaluated and recorded before any credit is released and before the value is yielded.
-        Handing out the credit first -- or deciding only after the caller resumes the generator --
-        leaves a window in which a worker picks up more work while the decision is already known.
+        A rolling window of at most `jobs` probes: fill the window, wait for one answer, decide,
+        then submit exactly one replacement. `items` is pulled one element at a time, so memory is
+        `O(jobs)` rather than `O(items)` and an endless generator of candidate placements is a
+        perfectly good argument.
+
+        `stop_on` is a predicate on the verdict. There is exactly one place in this loop where
+        work begins, and it runs only after an answer has been delivered and did not match, so
+        **no probe is started once an answer matches**, and none is started while the caller is
+        between answers either.
 
         There is deliberately no claim of cancellation: the protocol cannot abandon a probe the
-        child has already begun, so on a match the generator drains the probes still running --
-        at most `jobs - 1` of them, and their answers are discarded -- and only then returns.
-        Its total runtime after a match is therefore one probe, not the remaining work. A caller
-        that needs a tighter bound should pass a smaller `ms`.
+        child has already begun, so on a match the at most `jobs - 1` probes still running are
+        drained, their answers discarded, and only then does the generator return. Its runtime
+        after a match is one probe, not the remaining work. A caller that needs a tighter bound
+        should pass a smaller `ms`.
 
         Uses the whole pool for its duration; a concurrent `probe()` call will wait.
         """
-        pending: queue.Queue = queue.Queue()
-        for item in items:
-            pending.put(item)
-        answers: queue.Queue = queue.Queue()
-        stop = threading.Event()
-        # Guards the handout so that "is there work left" and "have we stopped" are decided
-        # together; without it a worker could take an item in the instant between the generator
-        # seeing a match and recording it.
-        handout = threading.Lock()
-        # One credit per in-flight probe. The generator returns a credit for every answer it
-        # consumes and keeps them all from the matching answer onwards.
-        credits = threading.Semaphore(len(self._all))
+        items = iter(items)
 
-        def take():
-            with handout:
-                if stop.is_set():
-                    return None
-                try:
-                    return pending.get_nowait()
-                except queue.Empty:
-                    return None
+        with ThreadPoolExecutor(max_workers=len(self._all)) as pool:
+            in_flight = {}
 
-        def worker():
-            oracle = self._free.get()
-            try:
-                while True:
-                    credits.acquire()
-                    item = take()
-                    if item is None:
-                        break
-                    key, grid = item
-                    try:
-                        verdict = oracle.probe(grid, ms=ms, want_fill=want_fill)
-                    except Exception as error:  # noqa: BLE001 - re-raised in the consumer
-                        answers.put((key, None, error))
-                        break
-                    answers.put((key, verdict, None))
-            finally:
-                self._free.put(oracle)
-                answers.put(None)  # this worker has retired
-
-        workers = [threading.Thread(target=worker, daemon=True) for _ in self._all]
-        for thread in workers:
-            thread.start()
-        try:
-            retired = 0
-            while retired < len(workers):
-                answer = answers.get()
-                if answer is None:
-                    retired += 1
-                    continue
-                key, verdict, error = answer
-                if error is not None:
-                    raise error
-                matched = stop_on is not None and stop_on(verdict)
-                if matched:
-                    with handout:
-                        stop.set()
-                else:
-                    credits.release()
-                yield key, verdict
-                if matched:
+            def submit_next():
+                for key, grid in items:
+                    in_flight[pool.submit(self.probe, grid, ms=ms, want_fill=want_fill)] = key
                     return
-        finally:
-            with handout:
-                stop.set()
-            # Wake anyone parked on a credit so the drain can finish.
-            for _ in workers:
-                credits.release()
-            for thread in workers:
-                thread.join()
+
+            for _ in self._all:
+                submit_next()
+
+            while in_flight:
+                # One answer per turn: a batch of simultaneous completions would let a later one
+                # submit work after an earlier one had already matched.
+                done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+                future = next(iter(done))
+                key = in_flight.pop(future)
+                verdict = future.result()
+                if stop_on is not None and stop_on(verdict):
+                    yield key, verdict
+                    return
+                yield key, verdict
+                # Only now, with the answer delivered and no match, is more work started. Doing it
+                # before the yield would hold a finished answer hostage to a slow producer, and
+                # would start a probe while the caller still held the decision.
+                submit_next()
 
     def close(self):
         for oracle in self._all:

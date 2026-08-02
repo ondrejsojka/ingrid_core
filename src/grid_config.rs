@@ -15,7 +15,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::types::{GlyphId, WordId};
 use crate::util::build_glyph_counts_by_cell;
-use crate::word_list::WordList;
+use crate::word_list::{normalize_grid_letter, WordList};
 
 /// An identifier for the intersection between two slots; these correspond one-to-one with checked
 /// squares in the grid and are used to track weights (i.e., how often each square is involved in
@@ -570,6 +570,12 @@ pub enum TemplateError {
         expected: usize,
         found: usize,
     },
+    /// A fixed letter folded away to nothing, which no legitimate grid cell does.
+    UnfoldableLetter {
+        row: usize,
+        column: usize,
+        letter: char,
+    },
 }
 
 impl std::fmt::Display for TemplateError {
@@ -584,6 +590,14 @@ impl std::fmt::Display for TemplateError {
             } => write!(
                 f,
                 "rows must all be the same length: row {row} has {found}, expected {expected}"
+            ),
+            TemplateError::UnfoldableLetter {
+                row,
+                column,
+                letter,
+            } => write!(
+                f,
+                "the letter {letter:?} at row {row}, column {column} is not a fillable character"
             ),
         }
     }
@@ -687,6 +701,28 @@ impl ParsedTemplate {
             slots,
             longest_run,
         })
+    }
+
+    /// Fold accented fixed letters into their unaccented forms, matching a word list loaded with
+    /// `convert_diacritics`.
+    ///
+    /// This is the whole of the normalization a template needs, and it runs *after* parsing so
+    /// that grid syntax is already consumed: `#` and `.` cannot reach it, and a dictionary
+    /// sanitiser cannot be pointed at a template by accident. Callers derive the flag from the
+    /// corpus (`WordList::converts_diacritics`) rather than configuring it separately, because a
+    /// second copy of the policy is a way to prove a fillable grid unfillable.
+    pub fn fold_diacritics(&mut self) -> Result<(), TemplateError> {
+        for (index, cell) in self.fill.iter_mut().enumerate() {
+            let Some(letter) = *cell else { continue };
+            *cell = Some(normalize_grid_letter(letter, true).ok_or(
+                TemplateError::UnfoldableLetter {
+                    row: index / self.width,
+                    column: index % self.width,
+                    letter,
+                },
+            )?);
+        }
+        Ok(())
     }
 }
 

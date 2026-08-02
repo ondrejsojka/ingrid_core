@@ -18,19 +18,16 @@ use crate::grid_config::{
     TemplateError,
 };
 use crate::live_state::PreparedSearch;
-use crate::word_list::{normalize_word, NormalizationSettings, WordList};
+use crate::word_list::{DiacriticPolicyConflict, WordList};
 
-/// Campaign-fixed probe policy. Word lists, scores and dupe rules are properties of the loaded
-/// `WordList` and are therefore fixed for the lifetime of the oracle by construction; what remains
-/// here is everything else a probe needs. If a campaign needs two policies, run two oracles.
+/// Campaign-fixed probe policy. Word lists, scores, dupe rules and diacritic handling are all
+/// properties of the loaded `WordList` and are therefore fixed for the lifetime of the oracle by
+/// construction; what remains here is everything else a probe needs. If a campaign needs two
+/// policies, run two oracles.
 #[derive(Debug, Clone)]
 pub struct OracleOptions {
     /// Minimum allowable word score, applied to every slot of every probe.
     pub min_score: u16,
-
-    /// Normalization applied to incoming templates. This must match the settings the word list
-    /// sources were loaded with, or fixed letters will not line up with dictionary glyphs.
-    pub normalization: Option<NormalizationSettings>,
 
     /// Default search budget spent per probe *after* initial arc consistency. Zero means
     /// "arc consistency only", which is the cheap and most decisive setting: it can prove
@@ -45,7 +42,6 @@ impl Default for OracleOptions {
     fn default() -> Self {
         OracleOptions {
             min_score: 50,
-            normalization: None,
             default_probe_time: Duration::ZERO,
             seed: 0,
         }
@@ -164,25 +160,43 @@ impl Display for ProbeError {
 pub struct Oracle {
     word_list: WordList,
     options: OracleOptions,
+    /// Derived from the corpus, never configured separately: whether fixed letters in a template
+    /// must be folded to match dictionary entries.
+    convert_diacritics: bool,
     probe_count: u64,
 }
 
 impl Oracle {
     /// Take ownership of a fully configured word list. Everything that varies per campaign —
-    /// sources, tiers, blocklist, `max_shared_substring`, `exempt_preferred_dupes` — is already
-    /// baked into `word_list` and cannot be changed afterwards.
-    #[must_use]
-    pub fn new(word_list: WordList, options: OracleOptions) -> Self {
-        Oracle {
+    /// sources, tiers, blocklist, `max_shared_substring`, `exempt_preferred_dupes`, and how
+    /// accented letters were folded — is already baked into `word_list` and cannot be changed
+    /// afterwards.
+    ///
+    /// Fails when the enabled sources disagree about diacritics. There is then no policy the
+    /// oracle can apply to a template's fixed letters, and picking one would make it answer
+    /// `Unfillable` — a verdict callers are told is a proof — about grids that fill.
+    pub fn new(
+        word_list: WordList,
+        options: OracleOptions,
+    ) -> Result<Self, DiacriticPolicyConflict> {
+        let convert_diacritics = word_list.converts_diacritics()?;
+        Ok(Oracle {
             word_list,
             options,
+            convert_diacritics,
             probe_count: 0,
-        }
+        })
     }
 
     #[must_use]
     pub fn options(&self) -> &OracleOptions {
         &self.options
+    }
+
+    /// Whether this oracle folds accented letters in templates, as its corpus does.
+    #[must_use]
+    pub fn converts_diacritics(&self) -> bool {
+        self.convert_diacritics
     }
 
     /// The campaign corpus, exactly as it was when the oracle was constructed.
@@ -271,15 +285,15 @@ impl Oracle {
         Ok(probe)
     }
 
-    /// Normalize a template the way the word list sources were normalized, then validate it.
+    /// Validate a template's syntax, then fold its fixed letters the way the corpus was folded.
+    ///
+    /// Parse first, fold second. The other order runs a dictionary normalizer across `#` and `.`,
+    /// which at best is a no-op and at worst deletes the entire grid.
     fn parse_template(&self, template: &str) -> Result<ParsedTemplate, ProbeError> {
-        let normalized: String = template
-            .trim()
-            .lines()
-            .map(|line| normalize_word(line.trim(), &self.options.normalization))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let parsed = ParsedTemplate::parse(&normalized)?;
+        let mut parsed = ParsedTemplate::parse(template)?;
+        if self.convert_diacritics {
+            parsed.fold_diacritics()?;
+        }
 
         let maximum = self.max_slot_length();
         if parsed.longest_run > maximum {
@@ -382,7 +396,9 @@ mod tests {
     use crate::live_state::PreparedSearch;
     use crate::oracle::{Oracle, OracleOptions, ProbeError, ProbeOptions, Verdict};
     use crate::word_list::tests::word_list_source_config;
-    use crate::word_list::{WordList, WordListSourceConfig, WordListSourceConfigProvider};
+    use crate::word_list::{
+        NormalizationSettings, WordList, WordListSourceConfig, WordListSourceConfigProvider,
+    };
 
     /// The engine forbids using the same word twice even with no `max_shared_substring`, so a
     /// fillable 2x2 needs four distinct words: `ab`/`cd` across, `ac`/`bd` down.
@@ -408,7 +424,7 @@ mod tests {
     }
 
     fn oracle_with(words: &[(&str, u16)], options: OracleOptions) -> Oracle {
-        Oracle::new(word_list(words, None), options)
+        Oracle::new(word_list(words, None), options).expect("sources agree about diacritics")
     }
 
     fn oracle(words: &[(&str, u16)]) -> Oracle {
@@ -503,7 +519,8 @@ mod tests {
             ..OracleOptions::default()
         };
 
-        let mut permissive = Oracle::new(word_list(words, None), options());
+        let mut permissive =
+            Oracle::new(word_list(words, None), options()).expect("sources agree about diacritics");
         assert_eq!(
             permissive
                 .probe_with(template, &FILL_PROBE)
@@ -513,7 +530,8 @@ mod tests {
         );
 
         // `max_shared_substring` is the largest *allowed* overlap, so 3 forbids sharing four.
-        let mut strict = Oracle::new(word_list(words, Some(3)), options());
+        let mut strict = Oracle::new(word_list(words, Some(3)), options())
+            .expect("sources agree about diacritics");
         let probe = strict.probe_with(template, &FILL_PROBE).unwrap();
         assert_eq!(probe.verdict, Verdict::Unfillable);
         assert_eq!(
@@ -576,7 +594,8 @@ mod tests {
                 min_score: 0,
                 ..OracleOptions::default()
             },
-        );
+        )
+        .expect("sources agree about diacritics");
         assert_eq!(
             oracle.probe_with("..\n..", &FILL_PROBE).unwrap().verdict,
             Verdict::Unfillable
@@ -707,7 +726,8 @@ mod tests {
                 default_probe_time: Duration::from_secs(10),
                 ..OracleOptions::default()
             },
-        );
+        )
+        .expect("sources agree about diacritics");
         let bare = oracle.probe(".....\n.....\n.....\n.....\n.....").unwrap();
         assert_eq!(bare.verdict, Verdict::Fillable);
         assert_eq!(bare.slot_count, 10);
@@ -760,7 +780,8 @@ mod tests {
                 min_score: 0,
                 ..OracleOptions::default()
             },
-        );
+        )
+        .expect("sources agree about diacritics");
         let before = corpus_fingerprint(oracle.word_list());
 
         for _ in 0..3 {
@@ -790,7 +811,8 @@ mod tests {
                 min_score: 50,
                 ..OracleOptions::default()
             },
-        );
+        )
+        .expect("sources agree about diacritics");
         let before = corpus_fingerprint(oracle.word_list());
         for pin in ["qqqqq", "xyzzy", "qqqqq", "vwxyz"] {
             let probe = oracle
@@ -825,7 +847,8 @@ mod tests {
             ..OracleOptions::default()
         };
 
-        let mut permissive = Oracle::new(word_list(words, None), options());
+        let mut permissive =
+            Oracle::new(word_list(words, None), options()).expect("sources agree about diacritics");
         assert_eq!(
             permissive
                 .probe_with(template, &FILL_PROBE)
@@ -834,7 +857,8 @@ mod tests {
             Verdict::Fillable
         );
 
-        let mut strict = Oracle::new(word_list(words, Some(3)), options());
+        let mut strict = Oracle::new(word_list(words, Some(3)), options())
+            .expect("sources agree about diacritics");
         let before = corpus_fingerprint(strict.word_list());
         assert_eq!(
             strict.probe_with(template, &FILL_PROBE).unwrap().verdict,
@@ -846,6 +870,146 @@ mod tests {
         assert_eq!(
             strict.probe_with(template, &FILL_PROBE).unwrap().verdict,
             Verdict::Unfillable
+        );
+    }
+
+    fn accented_word_list(settings: Option<NormalizationSettings>) -> WordList {
+        WordList::new(
+            vec![WordListSourceConfig {
+                id: "standard".into(),
+                enabled: true,
+                provider: WordListSourceConfigProvider::Memory {
+                    words: SQUARE
+                        .iter()
+                        .map(|&(word, score)| (word.to_string(), score))
+                        .collect(),
+                },
+                normalization: settings,
+            }],
+            None,
+            Some(5),
+            None,
+        )
+    }
+
+    const FOLDING: NormalizationSettings = NormalizationSettings {
+        strip_punctuation: false,
+        convert_diacritics: true,
+    };
+
+    /// A diacritic-folding corpus stores `ab`, so a template pinning `á` has to be folded the same
+    /// way or the oracle reports a *proof* of unfillability about a grid that fills. The policy is
+    /// therefore taken from the corpus and cannot be set to something else.
+    #[test]
+    fn template_letters_are_folded_exactly_as_the_corpus_was() {
+        let mut folding = Oracle::new(
+            accented_word_list(Some(FOLDING)),
+            OracleOptions {
+                min_score: 0,
+                ..OracleOptions::default()
+            },
+        )
+        .expect("one source cannot disagree with itself");
+        assert!(folding.converts_diacritics());
+        assert_eq!(
+            folding.probe_with("á.\n..", &FILL_PROBE).unwrap().verdict,
+            Verdict::Fillable,
+            "an accented pin must reach the folded entry it names"
+        );
+        assert_eq!(
+            folding.probe_with("ab\ncd", &FILL_PROBE).unwrap().fill,
+            Some("ab\ncd".to_string())
+        );
+
+        // The same letter against a corpus that keeps accents is genuinely unfillable, and saying
+        // so is correct rather than an artifact of a mismatched second policy.
+        let mut verbatim = oracle(SQUARE);
+        assert!(!verbatim.converts_diacritics());
+        assert_eq!(
+            verbatim.probe_with("á.\n..", &FILL_PROBE).unwrap().verdict,
+            Verdict::Unfillable
+        );
+    }
+
+    /// Sources that disagree leave no single answer, and guessing one would put a wrong `á` in
+    /// front of the dictionary on every probe.
+    #[test]
+    fn an_oracle_refuses_to_guess_between_conflicting_sources() {
+        let word_list = WordList::new(
+            vec![
+                WordListSourceConfig {
+                    id: "preferred".into(),
+                    enabled: true,
+                    provider: WordListSourceConfigProvider::Memory {
+                        words: vec![("ab".into(), 50)],
+                    },
+                    normalization: Some(FOLDING),
+                },
+                WordListSourceConfig {
+                    id: "standard".into(),
+                    enabled: true,
+                    provider: WordListSourceConfigProvider::Memory {
+                        words: vec![("cd".into(), 50)],
+                    },
+                    normalization: None,
+                },
+            ],
+            None,
+            Some(5),
+            None,
+        );
+        let Err(conflict) = Oracle::new(word_list, OracleOptions::default()) else {
+            panic!("mismatched sources have no single policy");
+        };
+        assert_eq!(conflict.folding, vec!["preferred".to_string()]);
+        assert_eq!(conflict.verbatim, vec!["standard".to_string()]);
+    }
+
+    /// Grid syntax is not word content: a source configured to strip punctuation from its entries
+    /// must not have that stripping pointed at the `#` and `.` that carry the grid's structure.
+    #[test]
+    fn source_punctuation_stripping_never_reaches_the_template() {
+        let stripping = NormalizationSettings {
+            strip_punctuation: true,
+            convert_diacritics: true,
+        };
+        let mut oracle = Oracle::new(
+            accented_word_list(Some(stripping)),
+            OracleOptions {
+                min_score: 0,
+                ..OracleOptions::default()
+            },
+        )
+        .expect("one source cannot disagree with itself");
+        assert_eq!(
+            oracle.probe_with("..\n..", &FILL_PROBE).unwrap().verdict,
+            Verdict::Fillable
+        );
+        assert_eq!(
+            oracle.probe_with("..#\n..#", &FILL_PROBE).unwrap().fill,
+            Some("ab#\ncd#".to_string())
+        );
+    }
+
+    /// A cell holding a bare combining mark folds away to nothing; that is malformed input, not a
+    /// silently empty cell.
+    #[test]
+    fn a_letter_that_folds_away_is_an_error() {
+        let mut oracle = Oracle::new(
+            accented_word_list(Some(FOLDING)),
+            OracleOptions {
+                min_score: 0,
+                ..OracleOptions::default()
+            },
+        )
+        .expect("one source cannot disagree with itself");
+        assert_eq!(
+            oracle.probe("\u{0301}.\n..").unwrap_err(),
+            ProbeError::Template(TemplateError::UnfoldableLetter {
+                row: 0,
+                column: 0,
+                letter: '\u{0301}',
+            })
         );
     }
 }
