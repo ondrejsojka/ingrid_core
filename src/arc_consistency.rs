@@ -604,18 +604,20 @@ mod tests {
     use crate::word_list::WordList;
     use std::time::Instant;
 
-    fn generate_config(template: &str) -> OwnedGridConfig {
+    fn generate_config(template: &str) -> (WordList, OwnedGridConfig) {
         let template = template.trim();
         let width = template.lines().map(str::len).max().unwrap();
         let height = template.lines().count();
-        let word_list = WordList::new(
+        let mut word_list = WordList::new(
             word_list_source_config(),
             None,
             Some(width.max(height)),
             Some(5),
         );
 
-        generate_grid_config_from_template_string(word_list, template, 40)
+        let config = generate_grid_config_from_template_string(&mut word_list, template, 40)
+            .expect("test template is valid");
+        (word_list, config)
     }
 
     #[test]
@@ -623,7 +625,7 @@ mod tests {
         // This grid is Ryan McCarty's "Chasm No. 1", with some words populated (including all the
         // words in the real puzzle that don't have a score of 40 or higher in STWL), as a
         // representative example of a very open grid.
-        let mut grid_config = generate_config(
+        let (word_list, mut grid_config) = generate_config(
             "
             smashcake###.e.
             ......l..##..d.
@@ -649,7 +651,7 @@ mod tests {
 
         let start = Instant::now();
 
-        let config_ref = grid_config.to_config_ref();
+        let config_ref = grid_config.to_config_ref(&word_list);
         let mut eliminations_by_slot =
             EliminationSet::build_all(config_ref.slot_configs, config_ref.word_list);
         establish_arc_consistency_for_static_grid(&config_ref, &mut eliminations_by_slot)

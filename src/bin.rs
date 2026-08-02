@@ -1,11 +1,13 @@
 use clap::Parser;
 use ingrid_core::backtracking_search::FillFailure;
-use ingrid_core::grid_config::{generate_grid_config_from_template_string, render_grid};
+use ingrid_core::grid_config::{
+    generate_grid_config_from_parsed, render_grid, CandidateOrder, ParsedTemplate,
+};
+use ingrid_core::oracle::{Oracle, OracleOptions, ProbeOptions};
 use ingrid_core::parallel_search::{
     find_best_fill, find_best_fill_with_observer, prepare_search, SearchEvent, SearchEventKind,
     SearchEventResult,
 };
-
 use ingrid_core::variant_estimate::{
     estimate_variants, InconclusiveReason, SamplingDiagnostics, VariantEstimate,
     VariantEstimateOptions, VariantEstimateOutcome,
@@ -14,10 +16,11 @@ use ingrid_core::word_list::{
     normalize_word, NormalizationSettings, WordList, WordListSourceConfig,
     WordListSourceConfigProvider,
 };
+use ingrid_core::MAX_SLOT_LENGTH;
 use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
@@ -98,8 +101,9 @@ impl SearchCsvLog {
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Path to the grid file, as ASCII with # representing blocks and . representing empty squares
-    grid_path: String,
+    /// Path to the grid file, as ASCII with # representing blocks and . representing empty squares.
+    /// Omitted with --serve, which reads templates from stdin instead.
+    grid_path: Option<String>,
 
     /// Path to the standard-tier scored wordlist [default: embedded Spread the Wordlist]
     #[arg(long)]
@@ -169,6 +173,20 @@ struct Args {
     /// Print timing information along with the grid
     #[arg(short, long, default_value_t = false)]
     time: bool,
+
+    /// Load the word lists once and then answer fillability questions from stdin forever, one
+    /// template per line with rows joined by `/`; see `oracle.md` for the protocol
+    #[arg(long, default_value_t = false)]
+    serve: bool,
+
+    /// Default per-probe search budget in milliseconds after arc consistency (--serve only); 0
+    /// answers from arc consistency alone, which can prove `unfillable` but never `fillable`
+    #[arg(long, default_value_t = 0)]
+    probe_time: u64,
+
+    /// Longest slot the oracle will be asked about (--serve only); shorter values load fewer words
+    #[arg(long)]
+    max_length: Option<usize>,
 }
 
 struct Error(String);
@@ -263,66 +281,15 @@ fn print_variant_estimate(estimate: &VariantEstimate) {
     );
 }
 
-fn main() -> Result<(), Error> {
-    let args = Args::parse();
-    if !args.estimate_runtime_ratio.is_finite() || args.estimate_runtime_ratio < 0.0 {
-        return Err(Error(
-            "--estimate-runtime-ratio must be a finite nonnegative number".into(),
-        ));
-    }
-    if !(0.0..1.0).contains(&args.estimate_guide_probability) {
-        return Err(Error(
-            "--estimate-guide-probability must be in [0, 1); 1.0 would never leave the incumbent path"
-                .into(),
-        ));
-    }
-    let normalization = args.ignore_diacritics.then_some(NormalizationSettings {
-        strip_punctuation: false,
-        convert_diacritics: true,
-    });
-    let raw_grid_content = fs::read_to_string(&args.grid_path)
-        .map_err(|_| Error(format!("Couldn't read file '{}'", args.grid_path)))?
-        .trim()
-        .lines()
-        .map(|line| normalize_word(line.trim(), &normalization))
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n";
-
-    let height = raw_grid_content.lines().count();
-
-    if height == 0 {
-        return Err(Error("Grid must have at least one row".into()));
-    }
-
-    if raw_grid_content
-        .lines()
-        .map(|line| line.chars().count())
-        .collect::<HashSet<_>>()
-        .len()
-        != 1
-    {
-        return Err(Error("Rows in grid must all be the same length".into()));
-    }
-
-    let width = raw_grid_content.lines().next().unwrap().chars().count();
-    let max_side = width.max(height);
-
-    if !args
-        .max_shared_substring
-        .map_or(true, |mss| (3..=10).contains(&mss))
-    {
-        return Err(Error(
-            "If given, max shared substring must be between 3 and 10".into(),
-        ));
-    }
-
-    let start = Instant::now();
-
-    let blocklist_normalization = normalization.clone();
-    let has_preferred_wordlist = args.preferred_wordlist.is_some();
+/// Build the campaign's word list: preferred tier first so it wins ties, then the standard tier,
+/// then the blocklist. Returns the list and the number of words the blocklist hid.
+fn build_word_list(
+    args: &Args,
+    normalization: &Option<NormalizationSettings>,
+    max_length: usize,
+) -> Result<(WordList, Option<usize>), Error> {
     let mut source_configs = Vec::with_capacity(2);
-    if let Some(preferred_wordlist_path) = args.preferred_wordlist {
+    if let Some(preferred_wordlist_path) = args.preferred_wordlist.as_deref() {
         source_configs.push(WordListSourceConfig {
             id: "preferred".into(),
             enabled: true,
@@ -332,7 +299,7 @@ fn main() -> Result<(), Error> {
             normalization: normalization.clone(),
         });
     }
-    source_configs.push(match args.wordlist {
+    source_configs.push(match args.wordlist.as_deref() {
         Some(wordlist_path) => WordListSourceConfig {
             id: "standard".into(),
             enabled: true,
@@ -345,22 +312,20 @@ fn main() -> Result<(), Error> {
             id: "standard".into(),
             enabled: true,
             provider: WordListSourceConfigProvider::FileContents { contents: STWL_RAW },
-            normalization,
+            normalization: normalization.clone(),
         },
     });
 
     let mut word_list = WordList::new(
         source_configs,
         None,
-        Some(max_side),
+        Some(max_length),
         args.max_shared_substring,
     );
     word_list.exempt_preferred_dupes = args.dupe_exempt_preferred;
-    if has_preferred_wordlist {
+    if args.preferred_wordlist.is_some() {
         word_list.set_preferred_source_ids(HashSet::from(["preferred".into()]));
     }
-
-    let word_list_time = start.elapsed();
 
     let source_errors = word_list
         .get_source_errors()
@@ -386,7 +351,7 @@ fn main() -> Result<(), Error> {
                 .lines()
                 .filter_map(|line| {
                     let word = line.split('#').next().unwrap_or("").trim();
-                    (!word.is_empty()).then(|| normalize_word(word, &blocklist_normalization))
+                    (!word.is_empty()).then(|| normalize_word(word, normalization))
                 })
                 .filter(|word| !word.is_empty())
                 .collect();
@@ -398,12 +363,77 @@ fn main() -> Result<(), Error> {
         None => None,
     };
 
-    let grid_config =
-        generate_grid_config_from_template_string(word_list, &raw_grid_content, args.min_score);
+    Ok((word_list, blocked_word_count))
+}
+
+fn main() -> Result<(), Error> {
+    let args = Args::parse();
+    if !args.estimate_runtime_ratio.is_finite() || args.estimate_runtime_ratio < 0.0 {
+        return Err(Error(
+            "--estimate-runtime-ratio must be a finite nonnegative number".into(),
+        ));
+    }
+    if !(0.0..1.0).contains(&args.estimate_guide_probability) {
+        return Err(Error(
+            "--estimate-guide-probability must be in [0, 1); 1.0 would never leave the incumbent path"
+                .into(),
+        ));
+    }
+    if !args
+        .max_shared_substring
+        .map_or(true, |mss| (3..=10).contains(&mss))
+    {
+        return Err(Error(
+            "If given, max shared substring must be between 3 and 10".into(),
+        ));
+    }
+    let normalization = args.ignore_diacritics.then_some(NormalizationSettings {
+        strip_punctuation: false,
+        convert_diacritics: true,
+    });
+
+    if args.serve {
+        serve(&args, normalization)
+    } else {
+        fill_once(&args, normalization)
+    }
+}
+
+fn fill_once(args: &Args, normalization: Option<NormalizationSettings>) -> Result<(), Error> {
+    let Some(grid_path) = args.grid_path.as_deref() else {
+        return Err(Error(
+            "A grid file is required unless --serve is given".into(),
+        ));
+    };
+    if args.max_length.is_some() {
+        return Err(Error("--max-length only applies to --serve".into()));
+    }
+    let raw_grid_content = fs::read_to_string(grid_path)
+        .map_err(|_| Error(format!("Couldn't read file '{grid_path}'")))?
+        .trim()
+        .lines()
+        .map(|line| normalize_word(line.trim(), &normalization))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let template = ParsedTemplate::parse(&raw_grid_content)
+        .map_err(|error| Error(format!("Invalid grid: {error}")))?;
+    let max_side = template.width.max(template.height);
+
+    let start = Instant::now();
+    let (mut word_list, blocked_word_count) = build_word_list(args, &normalization, max_side)?;
+    let word_list_time = start.elapsed();
+
+    let grid_config = generate_grid_config_from_parsed(
+        &mut word_list,
+        &template,
+        args.min_score,
+        CandidateOrder::Ranked,
+    );
 
     let timeout = (args.timeout != 0).then(|| Duration::from_secs(args.timeout));
     let worker_count = args.cores.map(NonZeroUsize::get);
-    let config_ref = grid_config.to_config_ref();
+    let config_ref = grid_config.to_config_ref(&word_list);
     let search_start = Instant::now();
     let deadline = timeout.map(|timeout| search_start + timeout);
     let prepared = prepare_search(&config_ref).map_err(fill_failure_error)?;
@@ -489,9 +519,139 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
+/// One parsed request line: a template plus its per-probe overrides.
+#[derive(Debug)]
+struct Request {
+    template: String,
+    options: ProbeOptions,
+}
+
+/// Parse a request line: the template first, with rows joined by `/`, then `key=value` overrides.
+fn parse_request(line: &str) -> Result<Request, String> {
+    let mut tokens = line.split_whitespace();
+    let template = tokens
+        .next()
+        .ok_or_else(|| "empty request".to_string())?
+        .replace('/', "\n");
+    let mut options = ProbeOptions::default();
+    for token in tokens {
+        let (key, value) = token
+            .split_once('=')
+            .ok_or_else(|| format!("option '{token}' is not key=value"))?;
+        match key {
+            "ms" => {
+                let ms = value
+                    .parse::<u64>()
+                    .map_err(|_| format!("ms must be a nonnegative integer, got '{value}'"))?;
+                options.probe_time = Some(Duration::from_millis(ms));
+            }
+            "fill" => {
+                options.want_fill = match value {
+                    "0" => false,
+                    "1" => true,
+                    other => return Err(format!("fill must be 0 or 1, got '{other}'")),
+                };
+            }
+            other => return Err(format!("unknown option '{other}'")),
+        }
+    }
+    Ok(Request { template, options })
+}
+
+/// Load the word lists once, then answer one probe per stdin line until stdin closes or the client
+/// says `quit`. Every response is exactly one line, so a client can read them back lockstep.
+fn serve(args: &Args, normalization: Option<NormalizationSettings>) -> Result<(), Error> {
+    if args.grid_path.is_some() {
+        return Err(Error(
+            "--serve reads templates from stdin; don't also pass a grid file".into(),
+        ));
+    }
+    if args.search_log.is_some() {
+        return Err(Error("--search-log doesn't apply to --serve".into()));
+    }
+    if args.estimate_variants {
+        return Err(Error("--estimate-variants doesn't apply to --serve".into()));
+    }
+    let max_length = args.max_length.unwrap_or(MAX_SLOT_LENGTH);
+    if !(2..=MAX_SLOT_LENGTH).contains(&max_length) {
+        return Err(Error(format!(
+            "--max-length must be between 2 and {MAX_SLOT_LENGTH}"
+        )));
+    }
+
+    let start = Instant::now();
+    let (word_list, blocked_word_count) = build_word_list(args, &normalization, max_length)?;
+    let mut oracle = Oracle::new(
+        word_list,
+        OracleOptions {
+            min_score: args.min_score,
+            normalization,
+            default_probe_time: Duration::from_millis(args.probe_time),
+            seed: args.seed,
+        },
+    );
+    let load_time = start.elapsed();
+
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    writeln!(
+        out,
+        "ready words={} max_length={} min_score={} probe_ms={} blocked={} load_ms={}",
+        oracle.visible_word_count(),
+        oracle.max_slot_length(),
+        args.min_score,
+        args.probe_time,
+        blocked_word_count.unwrap_or(0),
+        load_time.as_millis(),
+    )
+    .map_err(serve_io_error)?;
+    out.flush().map_err(serve_io_error)?;
+
+    for line in io::stdin().lock().lines() {
+        let line = line.map_err(serve_io_error)?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line == "quit" {
+            break;
+        }
+        match parse_request(line) {
+            Ok(request) => match oracle.probe_with(&request.template, &request.options) {
+                Ok(probe) => {
+                    write!(
+                        out,
+                        "{} slots={} min_domain={} setup_us={} ac_us={} us={}",
+                        probe.verdict,
+                        probe.slot_count,
+                        probe.min_domain,
+                        probe.setup_time.as_micros(),
+                        probe.arc_consistency_time.as_micros(),
+                        probe.elapsed.as_micros(),
+                    )
+                    .map_err(serve_io_error)?;
+                    if let Some(fill) = probe.fill {
+                        write!(out, " fill={}", fill.replace('\n', "/")).map_err(serve_io_error)?;
+                    }
+                    writeln!(out).map_err(serve_io_error)?;
+                }
+                Err(error) => writeln!(out, "error {error}").map_err(serve_io_error)?,
+            },
+            Err(message) => writeln!(out, "error {message}").map_err(serve_io_error)?,
+        }
+        out.flush().map_err(serve_io_error)?;
+    }
+
+    Ok(())
+}
+
+fn serve_io_error(error: io::Error) -> Error {
+    Error(format!("Oracle I/O failed: {error}"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{fill_failure_error, Args, SearchCsvLog, SEARCH_LOG_HEADER};
+    use super::{fill_failure_error, parse_request, Args, SearchCsvLog, SEARCH_LOG_HEADER};
     use clap::Parser;
     use ingrid_core::backtracking_search::FillFailure;
     use ingrid_core::parallel_search::{SearchEvent, SearchEventKind, SearchEventResult};
@@ -581,5 +741,55 @@ mod tests {
                 "2000,abort,9,4,2,7,8,2,5,,,,abort",
             ]
         );
+    }
+
+    #[test]
+    fn cli_serve_takes_no_grid_and_defaults_to_arc_consistency_only() {
+        let args = Args::try_parse_from(["ingrid_core", "--serve"]).unwrap();
+        assert!(args.serve);
+        assert!(args.grid_path.is_none());
+        assert_eq!(args.probe_time, 0);
+        assert!(args.max_length.is_none());
+    }
+
+    #[test]
+    fn a_request_line_joins_rows_with_slashes() {
+        let request = parse_request("..#/#..").unwrap();
+        assert_eq!(request.template, "..#\n#..");
+        assert!(request.options.probe_time.is_none());
+        assert!(!request.options.want_fill);
+    }
+
+    #[test]
+    fn a_request_line_can_override_the_budget_and_ask_for_the_fill() {
+        let request = parse_request("../.. ms=250 fill=1").unwrap();
+        assert_eq!(request.options.probe_time, Some(Duration::from_millis(250)));
+        assert!(request.options.want_fill);
+        // Zero is meaningful: it forces arc consistency only despite a nonzero campaign default.
+        assert_eq!(
+            parse_request("../.. ms=0").unwrap().options.probe_time,
+            Some(Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn a_malformed_request_line_names_the_problem() {
+        assert_eq!(
+            parse_request("../.. ms").unwrap_err(),
+            "option 'ms' is not key=value"
+        );
+        assert_eq!(
+            parse_request("../.. ms=soon").unwrap_err(),
+            "ms must be a nonnegative integer, got 'soon'"
+        );
+        assert_eq!(
+            parse_request("../.. fill=maybe").unwrap_err(),
+            "fill must be 0 or 1, got 'maybe'"
+        );
+        assert_eq!(
+            parse_request("../.. depth=3").unwrap_err(),
+            "unknown option 'depth'"
+        );
+        assert_eq!(parse_request("   ").unwrap_err(), "empty request");
     }
 }

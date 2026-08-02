@@ -8,9 +8,7 @@ use super::{
 };
 use crate::backtracking_search::{FillSuccess, Statistics};
 use crate::fill_set::DistinctFillSet;
-use crate::grid_config::{
-    generate_grid_config_from_template_string, Choice, GridConfig, OwnedGridConfig,
-};
+use crate::grid_config::{generate_grid_config_from_template_string, Choice, GridConfig};
 use crate::parallel_search::{canonical_fill_key, prepare_search, PreferredFillSuccess};
 use crate::types::WordId;
 use crate::word_list::{WordList, WordListSourceConfig, WordListSourceConfigProvider};
@@ -50,9 +48,8 @@ fn word_list(preferred: &[&str], standard: &[&str]) -> WordList {
     word_list_with_shared_limit(preferred, standard, None)
 }
 
-fn word_id(config: &OwnedGridConfig, word: &str) -> usize {
-    *config
-        .word_list
+fn word_id(word_list: &WordList, word: &str) -> usize {
+    *word_list
         .word_id_by_string
         .get(word)
         .expect("fixture word should exist")
@@ -193,14 +190,15 @@ fn assert_identical_estimates(first: &VariantEstimateOutcome, second: &VariantEs
 
 #[test]
 fn fully_fixed_grid_has_exactly_one_fill() {
-    let config =
-        generate_grid_config_from_template_string(word_list(&["cat"], &["dog"]), "cat\n", 0);
-    let config_ref = config.to_config_ref();
+    let mut word_list = word_list(&["cat"], &["dog"]);
+    let config = generate_grid_config_from_template_string(&mut word_list, "cat\n", 0)
+        .expect("test template is valid");
+    let config_ref = config.to_config_ref(&word_list);
     let prepared = prepare_search(&config_ref).unwrap();
     let result = incumbent(
         vec![Choice {
             slot_id: 0,
-            word_id: word_id(&config, "cat"),
+            word_id: word_id(&word_list, "cat"),
         }],
         1,
     );
@@ -219,14 +217,15 @@ fn fully_fixed_grid_has_exactly_one_fill() {
 
 #[test]
 fn impossible_preferred_threshold_has_exactly_zero_fills() {
-    let config =
-        generate_grid_config_from_template_string(word_list(&["cat"], &["dog"]), "...\n", 0);
-    let config_ref = config.to_config_ref();
+    let mut word_list = word_list(&["cat"], &["dog"]);
+    let config = generate_grid_config_from_template_string(&mut word_list, "...\n", 0)
+        .expect("test template is valid");
+    let config_ref = config.to_config_ref(&word_list);
     let prepared = prepare_search(&config_ref).unwrap();
     let result = incumbent(
         vec![Choice {
             slot_id: 0,
-            word_id: word_id(&config, "cat"),
+            word_id: word_id(&word_list, "cat"),
         }],
         2,
     );
@@ -245,19 +244,20 @@ fn impossible_preferred_threshold_has_exactly_zero_fills() {
 
 #[test]
 fn disconnected_slots_estimate_duplicate_constrained_count() {
-    let config =
-        generate_grid_config_from_template_string(word_list(&["cat"], &["dog"]), "...#...\n", 0);
-    let config_ref = config.to_config_ref();
+    let mut word_list = word_list(&["cat"], &["dog"]);
+    let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
+        .expect("test template is valid");
+    let config_ref = config.to_config_ref(&word_list);
     let prepared = prepare_search(&config_ref).unwrap();
     let result = incumbent(
         vec![
             Choice {
                 slot_id: 0,
-                word_id: word_id(&config, "cat"),
+                word_id: word_id(&word_list, "cat"),
             },
             Choice {
                 slot_id: 1,
-                word_id: word_id(&config, "dog"),
+                word_id: word_id(&word_list, "dog"),
             },
         ],
         0,
@@ -271,22 +271,20 @@ fn disconnected_slots_estimate_duplicate_constrained_count() {
 
 #[test]
 fn shared_substring_rejections_never_contribute_as_leaves() {
-    let config = generate_grid_config_from_template_string(
-        word_list_with_shared_limit(&[], &["stone", "stony", "spear"], Some(3)),
-        ".....#.....\n",
-        0,
-    );
-    let config_ref = config.to_config_ref();
+    let mut word_list = word_list_with_shared_limit(&[], &["stone", "stony", "spear"], Some(3));
+    let config = generate_grid_config_from_template_string(&mut word_list, ".....#.....\n", 0)
+        .expect("test template is valid");
+    let config_ref = config.to_config_ref(&word_list);
     let prepared = prepare_search(&config_ref).unwrap();
     let result = incumbent(
         vec![
             Choice {
                 slot_id: 0,
-                word_id: word_id(&config, "stone"),
+                word_id: word_id(&word_list, "stone"),
             },
             Choice {
                 slot_id: 1,
-                word_id: word_id(&config, "spear"),
+                word_id: word_id(&word_list, "spear"),
             },
         ],
         0,
@@ -306,19 +304,20 @@ fn shared_substring_rejections_never_contribute_as_leaves() {
 
 #[test]
 fn fixed_seed_is_reproducible_across_worker_counts() {
-    let config =
-        generate_grid_config_from_template_string(word_list(&["cat"], &["dog"]), "...#...\n", 0);
-    let config_ref = config.to_config_ref();
+    let mut word_list = word_list(&["cat"], &["dog"]);
+    let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
+        .expect("test template is valid");
+    let config_ref = config.to_config_ref(&word_list);
     let prepared = prepare_search(&config_ref).unwrap();
     let result = incumbent(
         vec![
             Choice {
                 slot_id: 0,
-                word_id: word_id(&config, "cat"),
+                word_id: word_id(&word_list, "cat"),
             },
             Choice {
                 slot_id: 1,
-                word_id: word_id(&config, "dog"),
+                word_id: word_id(&word_list, "dog"),
             },
         ],
         0,
@@ -336,19 +335,20 @@ fn fixed_seed_is_reproducible_across_worker_counts() {
 
 #[test]
 fn wave_split_cohorts_match_the_single_wave_cohort() {
-    let config =
-        generate_grid_config_from_template_string(word_list(&["cat"], &["dog"]), "...#...\n", 0);
-    let config_ref = config.to_config_ref();
+    let mut word_list = word_list(&["cat"], &["dog"]);
+    let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
+        .expect("test template is valid");
+    let config_ref = config.to_config_ref(&word_list);
     let prepared = prepare_search(&config_ref).unwrap();
     let result = incumbent(
         vec![
             Choice {
                 slot_id: 0,
-                word_id: word_id(&config, "cat"),
+                word_id: word_id(&word_list, "cat"),
             },
             Choice {
                 slot_id: 1,
-                word_id: word_id(&config, "dog"),
+                word_id: word_id(&word_list, "dog"),
             },
         ],
         0,
@@ -406,27 +406,28 @@ fn wave_split_cohorts_match_the_single_wave_cohort() {
 
 #[test]
 fn canonical_search_evidence_survives_without_sampling() {
-    let config =
-        generate_grid_config_from_template_string(word_list(&["cat"], &["dog"]), "...#...\n", 0);
-    let config_ref = config.to_config_ref();
+    let mut word_list = word_list(&["cat"], &["dog"]);
+    let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
+        .expect("test template is valid");
+    let config_ref = config.to_config_ref(&word_list);
     let reversed_choices = vec![
         Choice {
             slot_id: 1,
-            word_id: word_id(&config, "dog"),
+            word_id: word_id(&word_list, "dog"),
         },
         Choice {
             slot_id: 0,
-            word_id: word_id(&config, "cat"),
+            word_id: word_id(&word_list, "cat"),
         },
     ];
     let mut result = incumbent(reversed_choices.clone(), 0);
     assert_eq!(
         canonical_fill_key(&config_ref, &reversed_choices),
-        Some(vec![word_id(&config, "cat"), word_id(&config, "dog")].into_boxed_slice())
+        Some(vec![word_id(&word_list, "cat"), word_id(&word_list, "dog")].into_boxed_slice())
     );
     result
         .certified_fills
-        .insert(vec![word_id(&config, "dog"), word_id(&config, "cat")].into_boxed_slice());
+        .insert(vec![word_id(&word_list, "dog"), word_id(&word_list, "cat")].into_boxed_slice());
     assert_eq!(result.certified_fills.len(), 2);
     let mut configured = options(16, 4);
     configured.runtime_ratio = 0.0;
@@ -451,18 +452,19 @@ fn canonical_search_evidence_survives_without_sampling() {
 fn capped_certified_evidence_marks_the_estimate_capped() {
     // The certified-evidence marker must survive the estimator rebuilding its known-fill set,
     // even when the budget gate stops the estimator before any walk runs.
-    let config =
-        generate_grid_config_from_template_string(word_list(&["cat"], &["dog"]), "...#...\n", 0);
-    let config_ref = config.to_config_ref();
+    let mut word_list = word_list(&["cat"], &["dog"]);
+    let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
+        .expect("test template is valid");
+    let config_ref = config.to_config_ref(&word_list);
     let mut result = incumbent(
         vec![
             Choice {
                 slot_id: 0,
-                word_id: word_id(&config, "cat"),
+                word_id: word_id(&word_list, "cat"),
             },
             Choice {
                 slot_id: 1,
-                word_id: word_id(&config, "dog"),
+                word_id: word_id(&word_list, "dog"),
             },
         ],
         0,
@@ -489,11 +491,12 @@ fn capped_certified_evidence_marks_the_estimate_capped() {
 
 #[test]
 fn canonical_fill_key_rejects_duplicate_or_missing_slots() {
-    let config =
-        generate_grid_config_from_template_string(word_list(&["cat"], &["dog"]), "...#...\n", 0);
-    let config_ref = config.to_config_ref();
-    let cat = word_id(&config, "cat");
-    let dog = word_id(&config, "dog");
+    let mut word_list = word_list(&["cat"], &["dog"]);
+    let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
+        .expect("test template is valid");
+    let config_ref = config.to_config_ref(&word_list);
+    let cat = word_id(&word_list, "cat");
+    let dog = word_id(&word_list, "dog");
     let shuffled = vec![
         Choice {
             slot_id: 1,
@@ -538,14 +541,15 @@ fn canonical_fill_key_rejects_duplicate_or_missing_slots() {
 
 #[test]
 fn invalid_options_are_reported_without_sampling() {
-    let config =
-        generate_grid_config_from_template_string(word_list(&["cat"], &["dog"]), "...\n", 0);
-    let config_ref = config.to_config_ref();
+    let mut word_list = word_list(&["cat"], &["dog"]);
+    let config = generate_grid_config_from_template_string(&mut word_list, "...\n", 0)
+        .expect("test template is valid");
+    let config_ref = config.to_config_ref(&word_list);
     let prepared = prepare_search(&config_ref).unwrap();
     let result = incumbent(
         vec![Choice {
             slot_id: 0,
-            word_id: word_id(&config, "cat"),
+            word_id: word_id(&word_list, "cat"),
         }],
         1,
     );

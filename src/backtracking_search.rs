@@ -921,26 +921,28 @@ mod tests {
         word_list
     }
 
-    fn generate_config_with_min_score(template: &str, min_score: u16) -> OwnedGridConfig {
+    fn generate_config_with_min_score(
+        template: &str,
+        min_score: u16,
+    ) -> (WordList, OwnedGridConfig) {
         let template = template.trim();
         let width = template.lines().map(str::len).max().unwrap();
         let height = template.lines().count();
-        let mut config = generate_grid_config_from_template_string(
-            load_word_list(width.max(height)),
-            template,
-            min_score,
-        );
+        let mut word_list = load_word_list(width.max(height));
+        let mut config =
+            generate_grid_config_from_template_string(&mut word_list, template, min_score)
+                .expect("test template is valid");
         config.abort = Some(Arc::new(AtomicBool::new(false)));
-        config
+        (word_list, config)
     }
 
-    fn generate_config(template: &str) -> OwnedGridConfig {
+    fn generate_config(template: &str) -> (WordList, OwnedGridConfig) {
         generate_config_with_min_score(template, 40)
     }
 
     #[test]
     fn test_find_fill_for_3x3_square() {
-        let grid_config = generate_config(
+        let (word_list, grid_config) = generate_config(
             "
             ...
             ...
@@ -948,19 +950,19 @@ mod tests {
             ",
         );
 
-        let result =
-            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
+        let result = find_fill(&grid_config.to_config_ref(&word_list), None, None)
+            .expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
             "{}",
-            render_grid(&grid_config.to_config_ref(), &result.choices)
+            render_grid(&grid_config.to_config_ref(&word_list), &result.choices)
         );
     }
 
     #[test]
     fn test_find_fill_for_5x5_square() {
-        let grid_config = generate_config(
+        let (word_list, grid_config) = generate_config(
             "
             .....
             .....
@@ -970,19 +972,19 @@ mod tests {
             ",
         );
 
-        let result =
-            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
+        let result = find_fill(&grid_config.to_config_ref(&word_list), None, None)
+            .expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
             "{}",
-            render_grid(&grid_config.to_config_ref(), &result.choices)
+            render_grid(&grid_config.to_config_ref(&word_list), &result.choices)
         );
     }
 
     #[test]
     fn test_find_fill_for_6x6_square() {
-        let grid_config = generate_config(
+        let (word_list, grid_config) = generate_config(
             "
             ......
             ......
@@ -993,19 +995,19 @@ mod tests {
             ",
         );
 
-        let result =
-            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
+        let result = find_fill(&grid_config.to_config_ref(&word_list), None, None)
+            .expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
             "{}",
-            render_grid(&grid_config.to_config_ref(), &result.choices)
+            render_grid(&grid_config.to_config_ref(&word_list), &result.choices)
         );
     }
 
     #[test]
     fn test_find_fill_for_empty_7x7_template() {
-        let grid_config = generate_config(
+        let (word_list, grid_config) = generate_config(
             "
             #...###
             #....##
@@ -1017,19 +1019,19 @@ mod tests {
             ",
         );
 
-        let result =
-            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
+        let result = find_fill(&grid_config.to_config_ref(&word_list), None, None)
+            .expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
             "{}",
-            render_grid(&grid_config.to_config_ref(), &result.choices)
+            render_grid(&grid_config.to_config_ref(&word_list), &result.choices)
         );
     }
 
     #[test]
     fn test_find_fill_for_partially_populated_7x7_template() {
-        let grid_config = generate_config(
+        let (word_list, grid_config) = generate_config(
             "
             #..s###
             #..i.##
@@ -1041,19 +1043,19 @@ mod tests {
             ",
         );
 
-        let result =
-            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
+        let result = find_fill(&grid_config.to_config_ref(&word_list), None, None)
+            .expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
             "{}",
-            render_grid(&grid_config.to_config_ref(), &result.choices)
+            render_grid(&grid_config.to_config_ref(&word_list), &result.choices)
         );
     }
 
     #[test]
     fn test_dupe_prevention_doesnt_affect_prefilled_entries() {
-        let grid_config = generate_config(
+        let (word_list, grid_config) = generate_config(
             "
             #..p###
             #..a.##
@@ -1065,15 +1067,15 @@ mod tests {
             ",
         );
 
-        let result =
-            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
+        let result = find_fill(&grid_config.to_config_ref(&word_list), None, None)
+            .expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
     }
 
     #[test]
     fn test_fill_fails_gracefully() {
-        let grid_config = generate_config(
+        let (word_list, grid_config) = generate_config(
             "
             #..x###
             #....##
@@ -1085,13 +1087,13 @@ mod tests {
             ",
         );
 
-        find_fill(&grid_config.to_config_ref(), None, None)
+        find_fill(&grid_config.to_config_ref(&word_list), None, None)
             .expect_err("Found an impossible fill??");
     }
 
     #[test]
     fn test_find_fill_for_empty_15x15_themed_template() {
-        let grid_config = generate_config(
+        let (word_list, grid_config) = generate_config(
             "
             ....#.....#....
             ....#.....#....
@@ -1111,19 +1113,19 @@ mod tests {
             ",
         );
 
-        let result =
-            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
+        let result = find_fill(&grid_config.to_config_ref(&word_list), None, None)
+            .expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
             "{}",
-            render_grid(&grid_config.to_config_ref(), &result.choices)
+            render_grid(&grid_config.to_config_ref(&word_list), &result.choices)
         );
     }
 
     #[test]
     fn test_find_fill_for_empty_15x15_cryptic_template() {
-        let grid_config = generate_config(
+        let (word_list, grid_config) = generate_config(
             "
             ....#....#....#
             .#.#.#.#.#.#.#.
@@ -1143,19 +1145,19 @@ mod tests {
             ",
         );
 
-        let result =
-            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
+        let result = find_fill(&grid_config.to_config_ref(&word_list), None, None)
+            .expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
             "{}",
-            render_grid(&grid_config.to_config_ref(), &result.choices)
+            render_grid(&grid_config.to_config_ref(&word_list), &result.choices)
         );
     }
 
     #[test]
     fn test_find_fill_for_empty_15x15_themeless_template() {
-        let grid_config = generate_config(
+        let (word_list, grid_config) = generate_config(
             "
             ..........#....
             ..........#....
@@ -1175,19 +1177,19 @@ mod tests {
             ",
         );
 
-        let result =
-            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
+        let result = find_fill(&grid_config.to_config_ref(&word_list), None, None)
+            .expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
             "{}",
-            render_grid(&grid_config.to_config_ref(), &result.choices)
+            render_grid(&grid_config.to_config_ref(&word_list), &result.choices)
         );
     }
 
     #[test]
     fn test_find_fill_for_partially_populated_15x15_themeless_template() {
-        let grid_config = generate_config(
+        let (word_list, grid_config) = generate_config(
             "
             .......##......
             admirers#......
@@ -1207,19 +1209,19 @@ mod tests {
             ",
         );
 
-        let result =
-            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
+        let result = find_fill(&grid_config.to_config_ref(&word_list), None, None)
+            .expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
             "{}",
-            render_grid(&grid_config.to_config_ref(), &result.choices)
+            render_grid(&grid_config.to_config_ref(&word_list), &result.choices)
         );
     }
 
     #[test]
     fn test_abort_fill_attempt() {
-        let grid_config = generate_config_with_min_score(
+        let (word_list, grid_config) = generate_config_with_min_score(
             "
             .......##......
             .......s#......
@@ -1243,8 +1245,9 @@ mod tests {
         let abort = grid_config.abort.clone().unwrap();
         let start = Instant::now();
 
-        let thread =
-            std::thread::spawn(move || find_fill(&grid_config.to_config_ref(), None, None));
+        let thread = std::thread::spawn(move || {
+            find_fill(&grid_config.to_config_ref(&word_list), None, None)
+        });
 
         std::thread::sleep(Duration::from_secs(1));
         abort.store(true, Ordering::Relaxed);
@@ -1258,7 +1261,7 @@ mod tests {
 
     #[test]
     fn test_add_extra_dupe_rules() {
-        let mut grid_config = generate_config(
+        let (mut word_list, grid_config) = generate_config(
             "
             #..s###
             #..i.##
@@ -1270,13 +1273,13 @@ mod tests {
             ",
         );
 
-        let result_1 =
-            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
+        let result_1 = find_fill(&grid_config.to_config_ref(&word_list), None, None)
+            .expect("Failed to find a fill");
 
         // Obviously we'll have to rewrite this test if the algorithm changes in
         // a way that affects the output, but w/e.
         assert_eq!(
-            render_grid(&grid_config.to_config_ref(), &result_1.choices),
+            render_grid(&grid_config.to_config_ref(&word_list), &result_1.choices),
             indoc! {"
             .ass...
             .glib..
@@ -1296,20 +1299,19 @@ mod tests {
             )
         };
 
-        let retiree_id = get_id(&grid_config.word_list, "retiree");
-        let sss_id = get_id(&grid_config.word_list, "sss");
+        let retiree_id = get_id(&word_list, "retiree");
+        let sss_id = get_id(&word_list, "sss");
 
-        grid_config
-            .word_list
+        word_list
             .dupe_index
             .as_mut()
             .add_dupe_pair(retiree_id, sss_id);
 
-        let result_2 =
-            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
+        let result_2 = find_fill(&grid_config.to_config_ref(&word_list), None, None)
+            .expect("Failed to find a fill");
 
         assert_eq!(
-            render_grid(&grid_config.to_config_ref(), &result_2.choices),
+            render_grid(&grid_config.to_config_ref(&word_list), &result_2.choices),
             indoc! {"
             .ass...
             .glia..
@@ -1336,7 +1338,7 @@ mod tests {
             "
         .trim();
 
-        let word_list = WordList::new(
+        let mut word_list = WordList::new(
             vec![
                 WordListSourceConfig {
                     id: "0".into(),
@@ -1360,15 +1362,16 @@ mod tests {
             None,
         );
 
-        let grid_config = generate_grid_config_from_template_string(word_list, template, 40);
+        let grid_config = generate_grid_config_from_template_string(&mut word_list, template, 40)
+            .expect("test template is valid");
 
-        let result =
-            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
+        let result = find_fill(&grid_config.to_config_ref(&word_list), None, None)
+            .expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
             "{}",
-            render_grid(&grid_config.to_config_ref(), &result.choices)
+            render_grid(&grid_config.to_config_ref(&word_list), &result.choices)
         );
     }
 }

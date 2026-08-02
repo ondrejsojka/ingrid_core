@@ -821,8 +821,11 @@ mod tests {
         word_list
     }
 
-    fn tiered_single_slot_config() -> crate::grid_config::OwnedGridConfig {
-        generate_grid_config_from_template_string(tiered_word_list(), "...\n", 0)
+    fn tiered_single_slot_config() -> (WordList, crate::grid_config::OwnedGridConfig) {
+        let mut word_list = tiered_word_list();
+        let config = generate_grid_config_from_template_string(&mut word_list, "...\n", 0)
+            .expect("test template is valid");
+        (word_list, config)
     }
 
     #[test]
@@ -866,9 +869,9 @@ mod tests {
 
     #[test]
     fn preferred_minimum_is_a_hard_global_constraint() {
-        let config = tiered_single_slot_config();
+        let (word_list, config) = tiered_single_slot_config();
         let result = find_fill_with_options(
-            &config.to_config_ref(),
+            &config.to_config_ref(&word_list),
             None,
             None,
             FillOptions {
@@ -881,8 +884,8 @@ mod tests {
 
     #[test]
     fn parallel_search_finds_the_optimal_preferred_count() {
-        let config = tiered_single_slot_config();
-        let config_ref = config.to_config_ref();
+        let (word_list, config) = tiered_single_slot_config();
+        let config_ref = config.to_config_ref(&word_list);
         let prepared = prepare_search(&config_ref).unwrap();
         let result = find_best_fill(&config_ref, &prepared, None, Some(2), 0).unwrap();
         assert_eq!(result.preferred_word_count, 1);
@@ -890,8 +893,8 @@ mod tests {
 
     #[test]
     fn observer_reports_successful_convergence_in_order() {
-        let config = tiered_single_slot_config();
-        let config_ref = config.to_config_ref();
+        let (word_list, config) = tiered_single_slot_config();
+        let config_ref = config.to_config_ref(&word_list);
         let prepared = prepare_search(&config_ref).unwrap();
         let mut events = Vec::new();
         let result =
@@ -951,9 +954,11 @@ mod tests {
         // `prepare_search`, so no observer events are emitted: there is no
         // scheduler yet when preparation fails. The hard-failure contract moved
         // from the observer event stream to the `prepare_search` return value.
+        let mut word_list = tiered_word_list();
         let config =
-            generate_grid_config_from_template_string(tiered_word_list(), "...\n.#.\n...\n", 0);
-        let config_ref = config.to_config_ref();
+            generate_grid_config_from_template_string(&mut word_list, "...\n.#.\n...\n", 0)
+                .expect("test template is valid");
+        let config_ref = config.to_config_ref(&word_list);
         let result = prepare_search(&config_ref);
 
         assert!(matches!(result, Err(FillFailure::HardFailure)));
@@ -961,8 +966,8 @@ mod tests {
 
     #[test]
     fn observer_reports_scheduler_timeout_without_starting_workers() {
-        let config = tiered_single_slot_config();
-        let config_ref = config.to_config_ref();
+        let (word_list, config) = tiered_single_slot_config();
+        let config_ref = config.to_config_ref(&word_list);
         let prepared = prepare_search(&config_ref).unwrap();
         let mut events = Vec::new();
         let result = find_best_fill_with_observer(
@@ -987,9 +992,9 @@ mod tests {
 
     #[test]
     fn observer_reports_scheduler_abort_without_starting_workers() {
-        let mut config = tiered_single_slot_config();
+        let (word_list, mut config) = tiered_single_slot_config();
         config.abort = Some(Arc::new(AtomicBool::new(true)));
-        let config_ref = config.to_config_ref();
+        let config_ref = config.to_config_ref(&word_list);
         let prepared = prepare_search(&config_ref).unwrap();
         let mut events = Vec::new();
         let result =
@@ -1009,8 +1014,10 @@ mod tests {
 
     #[test]
     fn fixed_preferred_words_are_separate_from_discovered_words() {
-        let config = generate_grid_config_from_template_string(tiered_word_list(), "cat\n", 0);
-        let config_ref = config.to_config_ref();
+        let mut word_list = tiered_word_list();
+        let config = generate_grid_config_from_template_string(&mut word_list, "cat\n", 0)
+            .expect("test template is valid");
+        let config_ref = config.to_config_ref(&word_list);
         let prepared = prepare_search(&config_ref).unwrap();
         let mut events = Vec::new();
         let result =

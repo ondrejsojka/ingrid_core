@@ -405,6 +405,14 @@ type OnUpdateCallback = Box<dyn FnMut(&mut WordList, &[GlobalWordId]) + Send + S
 /// Errors that can arise when syncing to disk, keyed by the relevant source id.
 pub type SyncErrors = HashMap<String, io::Error>;
 
+/// The size of a `WordList` at a point in time, taken by [`WordList::snapshot`] and consumed by
+/// [`WordList::rewind`] to drop everything added since.
+#[derive(Debug, Clone)]
+pub struct WordListSnapshot {
+    word_counts_by_length: Vec<usize>,
+    glyph_count: usize,
+}
+
 /// A struct representing the currently-loaded word list(s). This contains information that is
 /// static regardless of grid geometry or our progress through a fill (although we do configure a
 /// `max_length` that depends on the size of the grid, since it helps performance to avoid
@@ -533,6 +541,52 @@ impl WordList {
                 || self.add_hidden_word(normalized_word),
                 |word_id| (normalized_word.chars().count(), word_id),
             )
+    }
+
+    /// Record the current size of the list so that entries added afterwards can be removed again.
+    #[must_use]
+    pub fn snapshot(&self) -> WordListSnapshot {
+        WordListSnapshot {
+            word_counts_by_length: self.words.iter().map(Vec::len).collect(),
+            glyph_count: self.glyphs.len(),
+        }
+    }
+
+    /// Drop every word and glyph added since `snapshot` was taken, restoring the list exactly.
+    ///
+    /// This exists so that entries a single grid forces into the list — `generate_slot_options`
+    /// calls `get_word_id_or_add_hidden` for every fully specified slot, whose letters need not
+    /// spell anything in the dictionary — stay local to that grid. Without it, a long-lived
+    /// process that configures thousands of grids against one corpus accumulates their fixed
+    /// entries in `words`, `word_id_by_string` and the dupe index, and later grids see a
+    /// dictionary that depends on which grids came before.
+    ///
+    /// Only entries appended after the snapshot are affected; words hidden by `hide_words` or
+    /// edited in place are not restored, and ids handed out before the snapshot stay valid.
+    pub fn rewind(&mut self, snapshot: &WordListSnapshot) {
+        for length in 0..self.words.len() {
+            let keep = snapshot
+                .word_counts_by_length
+                .get(length)
+                .copied()
+                .unwrap_or(0);
+            while self.words[length].len() > keep {
+                let word = self.words[length]
+                    .pop()
+                    .expect("bucket length was just checked");
+                let word_id = self.words[length].len();
+                if self.word_id_by_string.get(&word.normalized_string) == Some(&word_id) {
+                    self.word_id_by_string.remove(&word.normalized_string);
+                }
+                self.dupe_index.remove_word(word_id, &word);
+            }
+        }
+        self.words
+            .truncate(snapshot.word_counts_by_length.len().max(1));
+
+        for glyph in self.glyphs.split_off(snapshot.glyph_count) {
+            self.glyph_id_by_char.remove(&glyph);
+        }
     }
 
     /// Hide every loaded word whose normalized form appears in `blocked`, making it unavailable
@@ -2453,5 +2507,117 @@ pub mod tests {
         assert!(less_visible_words.is_empty());
 
         assert_eq!(fs::read_to_string(tmpfile.path()).unwrap(), "sT eev;51\n");
+    }
+
+    fn fingerprint(word_list: &WordList) -> (Vec<usize>, usize, usize, usize, usize) {
+        (
+            word_list.words.iter().map(Vec::len).collect(),
+            word_list.word_id_by_string.len(),
+            word_list.glyphs.len(),
+            word_list.dupe_index.group_count(),
+            word_list.dupe_index.indexed_word_count(),
+        )
+    }
+
+    #[test]
+    fn test_rewind_undoes_hidden_words_glyphs_and_dupe_groups() {
+        let mut word_list = WordList::new(
+            vec![WordListSourceConfig {
+                id: "0".into(),
+                enabled: true,
+                provider: WordListSourceConfigProvider::Memory {
+                    words: vec![("abcde".into(), 50), ("fghij".into(), 50)],
+                },
+                normalization: None,
+            }],
+            None,
+            Some(5),
+            Some(3),
+        );
+        let before = fingerprint(&word_list);
+        let snapshot = word_list.snapshot();
+
+        // `abcdz` shares the substring `abcd` with a loaded word, so it joins an existing group;
+        // `wxyz` introduces both a new glyph and brand-new groups; `q` is only a glyph.
+        let (_, abcdz) = word_list.get_word_id_or_add_hidden("abcdz");
+        assert!(word_list.get_word((5, abcdz)).hidden);
+        assert!(word_list
+            .dupe_index
+            .get_dupes_by_length((5, abcdz), false, &|_| false)
+            .get(&5)
+            .is_some_and(|ids| ids.contains(&0)));
+        word_list.get_word_id_or_add_hidden("wxyz");
+        word_list.glyph_id_for_char('q');
+        // A length that had no bucket at all, so `words` itself grew.
+        word_list.get_word_id_or_add_hidden("ab");
+        assert_ne!(fingerprint(&word_list), before);
+
+        word_list.rewind(&snapshot);
+        assert_eq!(fingerprint(&word_list), before);
+        assert!(!word_list.word_id_by_string.contains_key("abcdz"));
+        assert!(!word_list.glyph_id_by_char.contains_key(&'q'));
+        // Ids handed out before the snapshot still resolve, and their dupe relationships survive.
+        assert_eq!(word_list.get_word((5, 0)).normalized_string, "abcde");
+        assert!(word_list
+            .dupe_index
+            .get_dupes_by_length((5, 0), false, &|_| false)
+            .get(&5)
+            .is_some_and(|ids| ids.contains(&0)));
+    }
+
+    #[test]
+    fn test_rewind_is_stable_across_repeated_cycles() {
+        let mut word_list = WordList::new(
+            vec![WordListSourceConfig {
+                id: "0".into(),
+                enabled: true,
+                provider: WordListSourceConfigProvider::Memory {
+                    words: vec![("abcde".into(), 50)],
+                },
+                normalization: None,
+            }],
+            None,
+            Some(5),
+            Some(3),
+        );
+        let before = fingerprint(&word_list);
+        for _ in 0..5 {
+            let snapshot = word_list.snapshot();
+            for word in ["abcdz", "zyxwv", "abcdz"] {
+                word_list.get_word_id_or_add_hidden(word);
+            }
+            word_list.rewind(&snapshot);
+            assert_eq!(
+                fingerprint(&word_list),
+                before,
+                "an add/rewind cycle left residue behind"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rewind_leaves_blocklist_edits_alone() {
+        let mut word_list = WordList::new(
+            vec![WordListSourceConfig {
+                id: "0".into(),
+                enabled: true,
+                provider: WordListSourceConfigProvider::Memory {
+                    words: vec![("abcde".into(), 50)],
+                },
+                normalization: None,
+            }],
+            None,
+            Some(5),
+            None,
+        );
+        assert_eq!(
+            word_list.hide_words(&HashSet::from(["abcde".to_string()])),
+            1
+        );
+        let snapshot = word_list.snapshot();
+        word_list.get_word_id_or_add_hidden("vwxyz");
+        word_list.rewind(&snapshot);
+        // `rewind` only drops appended entries; it is not an undo log for in-place edits.
+        assert!(word_list.get_word((5, 0)).hidden);
     }
 }

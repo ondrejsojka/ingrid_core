@@ -14,22 +14,27 @@ The main CLI flow in `src/bin.rs` is:
 4. Run `parallel_search`, whose workers invoke the AC-3-backed randomized backtracking solver.
 5. Select the best preferred-word result and render its `Choice` values into the grid.
 
+`--serve` takes a second path through the same machinery: build the `WordList` once, then loop
+rebuilding steps 3-4 per template read from stdin and emit one three-valued fillability verdict per
+line. See `oracle.md`.
+
 Core modules:
 
 - `word_list`: ingestion, normalization, glyph encoding, source priority, preferred tiers, hidden words, and duplicate indexing.
-- `grid_config`: template parsing, slot/crossing construction, candidate filtering/ranking, and rendering. `OwnedGridConfig` owns setup data; `GridConfig<'a>` is the borrowed solver view.
+- `grid_config`: template parsing, slot/crossing construction, candidate filtering/ranking, and rendering. `ParsedTemplate::parse` is the only template parser; `OwnedGridConfig` owns per-template setup and borrows the corpus at `to_config_ref(&word_list)`; `GridConfig<'a>` is the borrowed solver view.
 - `arc_consistency`: generic crossword-specific AC-3 propagation through `ArcConsistencyAdapter`.
 - `backtracking_search`: reversible per-slot state, dom/wdeg-style selection, randomized retries, deadlines, and abort handling.
 - `parallel_search`: scoped worker threads, `std::sync::mpsc`, preferred-word target scheduling, cancellation, and optional scalar telemetry.
+- `oracle`: persistent fillability oracle. Holds one `WordList` across probes and answers `Unfillable` (a propagation or exhausted-search proof) / `Fillable` / `Unknown` (budget exhausted). Never collapses the third state into the first. Each probe brackets configuration with `WordList::snapshot`/`rewind`, so the hidden entries a fully specified slot forces into the dictionary stay local to that grid.
 - `dupe_index`, `types`, `util`: shared-substring constraints, compact ID aliases, and glyph-count domain summaries.
 
-State is explicit and mutable rather than global: `WordList` owns dictionary state; solver attempts own reversible `Slot`/elimination state. Concurrency uses threads, channels, and `Arc<AtomicBool>`, not an async runtime.
+State is explicit and mutable rather than global: `WordList` owns dictionary state; solver attempts own reversible `Slot`/elimination state. Concurrency uses threads, channels, and `Arc<AtomicBool>`, not an async runtime. Long-lived callers must keep dictionary mutations template-local: configuring a grid appends hidden words and glyphs, and `WordList::snapshot`/`rewind` (backed by `AnyDupeIndex::remove_word`) is how that is undone exactly rather than approximately.
 
 ## Key Directories
 
 - `src/`: Rust library, CLI, solver, and inline unit tests.
 - `resources/`: tracked dictionaries/blocklists, including `spreadthewordlist.dict` used by the CLI fallback and tests.
-- `scripts/`: Python dictionary preparation, source inspection, blocklist application, and fill-margin tooling.
+- `scripts/`: Python dictionary preparation, source inspection, blocklist application, fill-margin tooling, and the `--serve` oracle client (`oracle.py`).
 - `calibration/`: committed fillability calibration data and generated grid shapes.
 - `examples/`: currently empty; do not assume an example harness exists.
 - `local/`: ignored generated corpora, experiments, reports, and sweep outputs. Do not treat it as committed source.
@@ -90,8 +95,11 @@ Python scripts generally emit deterministic `word;score` dictionaries and option
 - `src/grid_config.rs`: public grid construction and rendering APIs.
 - `src/backtracking_search.rs`: single-worker solver.
 - `src/parallel_search.rs`: multi-core optimizer and observer events.
+- `src/oracle.rs`: persistent fillability oracle, three-valued verdicts, and per-probe diagnostics.
 - `README.md`: canonical CLI and Czech word-source workflows.
 - `fill-margin.md`: operational interpretation of the fillability screen.
+- `oracle.md`: oracle protocol, library entry point, measured probe costs, and the score-semantics/arc-consistency findings behind them.
+- `scripts/oracle.py`: `--serve` client, `OraclePool`, and the three-valued `Verdict` whose `__bool__` raises on purpose. `scripts/screen_audit.py` measures the arc-consistency screen against real fill attempts.
 - `.gitignore`: excludes `target/`, `Cargo.lock`, `local/`, and Python caches.
 
 ## Runtime/Tooling Preferences

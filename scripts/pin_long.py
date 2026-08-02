@@ -6,23 +6,30 @@ and essentially never a long one, because a long slot has few candidates and the
 that one of them is in a 79-word tier are tiny. Long entries are also the recognisable
 ones. So pin them explicitly and let the solver keep the rest.
 
-Two things this gets right that a generic seeder does not:
+The accept step runs against a persistent oracle (`scripts/oracle.py`), which loads the
+word lists once instead of once per probe. That buys two things this script previously
+could not have:
 
-* the oracle timeout is sized against a measured bare fill of the same template, so a
-  rejection means "unfillable", not "slower than 12 seconds" — the failure mode that
-  makes a seeder report "nothing placeable" on a grid that fills fine;
-* accepted placements are kept as fixed letters and the next round searches on top,
-  so the pins compose instead of being scored independently.
+* a **two-stage** accept. Every candidate placement is first screened by initial arc
+  consistency, which is a *proof* of unfillability when it fails and costs tens of
+  milliseconds. Only survivors pay for a real fill attempt.
+* an **honest** stop condition. "No more theme entries fit" is now a claim about proofs:
+  the round reports how many placements were refuted versus how many merely ran out of
+  budget, and only calls a template saturated when every candidate was refuted.
+
+Accepted placements are kept as fixed letters and the next round searches on top, so the
+pins compose instead of being scored independently.
 """
 
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from oracle import OraclePool, add_oracle_arguments, oracle_kwargs  # noqa: E402
 
 
 def read_grid(path):
@@ -66,45 +73,37 @@ def cells_of(slot):
     return [(r, c + i) if d == "A" else (r + i, c) for i in range(n)]
 
 
-def oracle(grid, args):
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
-                                     encoding="utf-8") as fh:
-        fh.write(dump(grid))
-        path = fh.name
-    try:
-        proc = subprocess.run(
-            [args.binary, "--wordlist", args.wordlist,
-             "--preferred-wordlist", args.preferred,
-             "--min-score", str(args.min_score),
-             "--max-shared-substring", str(args.max_shared_substring),
-             "--dupe-exempt-preferred",
-             "--timeout", str(args.oracle_timeout),
-             "--cores", str(args.oracle_cores), path],
-            capture_output=True, text=True,
-        )
-    finally:
-        Path(path).unlink(missing_ok=True)
-    out = proc.stdout.strip()
-    if proc.returncode != 0 or not out or "Error" in out.splitlines()[0]:
-        return None
-    return out.splitlines()
+def trials_for(grid, theme, placed, min_len):
+    """Every placement of an unplaced theme entry into a wholly empty slot of its length."""
+    free = [s for s in slots(grid) if all(grid[r][c] == "." for r, c in cells_of(s))]
+    out = []
+    for word in sorted(theme, key=len, reverse=True):
+        if word in placed or len(word) < min_len:
+            continue
+        for slot in free:
+            if slot[3] != len(word):
+                continue
+            work = [row[:] for row in grid]
+            for (r, c), ch in zip(cells_of(slot), word):
+                work[r][c] = ch
+            out.append(((word, slot), work))
+    return out
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--grid", required=True)
     ap.add_argument("--theme", required=True)
-    ap.add_argument("--wordlist", required=True)
-    ap.add_argument("--preferred", required=True)
-    ap.add_argument("--binary", default="./target/release/ingrid_core")
-    ap.add_argument("--min-score", type=int, default=33)
-    ap.add_argument("--max-shared-substring", type=int, default=5)
-    ap.add_argument("--oracle-timeout", type=int, default=90)
-    ap.add_argument("--oracle-cores", type=int, default=3)
-    ap.add_argument("--jobs", type=int, default=3)
+    ap.add_argument("--out", required=True)
     ap.add_argument("--min-len", type=int, default=6)
     ap.add_argument("--rounds", type=int, default=6)
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--jobs", type=int, default=3,
+                    help="oracle processes; each holds its own copy of the dictionary")
+    ap.add_argument("--probe-ms", type=int, default=3000,
+                    help="fill-attempt budget per surviving candidate, in milliseconds")
+    add_oracle_arguments(ap)
+    ap.set_defaults(min_score=33, max_shared_substring=5, dupe_exempt_preferred=True)
     args = ap.parse_args()
 
     theme = []
@@ -118,49 +117,62 @@ def main():
     grid = read_grid(args.grid)
     placed, best_fill = [], None
 
-    for rnd in range(args.rounds):
-        free = [s for s in slots(grid) if all(grid[r][c] == "." for r, c in cells_of(s))]
-        trials = []
-        for word in sorted(theme, key=len, reverse=True):
-            if word in placed or len(word) < args.min_len:
-                continue
-            for slot in free:
-                if slot[3] != len(word):
-                    continue
-                work = [row[:] for row in grid]
-                for (r, c), ch in zip(cells_of(slot), word):
-                    work[r][c] = ch
-                trials.append((word, slot, work))
-        if not trials:
-            print(f"round {rnd}: no candidate placements left")
-            break
-        print(f"round {rnd}: {len(trials)} placements to test", flush=True)
-        chosen = None
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            futures = {pool.submit(oracle, w, args): (word, slot, w)
-                       for word, slot, w in trials}
-            for fut in concurrent.futures.as_completed(futures):
-                word, slot, work = futures[fut]
-                try:
-                    res = fut.result()
-                except concurrent.futures.CancelledError:
-                    continue
-                print(f"  {word:<13} {slot} {'FILL' if res else 'reject'}", flush=True)
-                if res:
-                    chosen = (word, slot, work, res)
-                    # first acceptance wins: stop the round rather than paying for the
-                    # remaining oracle calls, and never read a cancelled future
-                    for f in futures:
-                        f.cancel()
-                    break
-        if chosen is None:
-            print(f"round {rnd}: nothing placeable, stopping")
-            break
-        word, slot, work, res = chosen
-        grid = work
-        placed.append(word)
-        best_fill = res
-        print(f"round {rnd}: PLACED {word} at {slot}", flush=True)
+    with OraclePool(jobs=args.jobs, **oracle_kwargs(args, probe_ms=0)) as pool:
+        print(" ".join(f"{k}={v}" for k, v in pool.ready.items())
+              + f" jobs={args.jobs}", file=sys.stderr, flush=True)
+
+        for rnd in range(args.rounds):
+            trials = trials_for(grid, theme, placed, args.min_len)
+            if not trials:
+                print(f"round {rnd}: no candidate placements left")
+                break
+
+            # Stage 1: arc consistency. A failure here is a proof, and it is cheap.
+            print(f"round {rnd}: screening {len(trials)} placements", flush=True)
+            work_by_key = dict(trials)
+            refuted, survivors = 0, []
+            for key, verdict in pool.probe_many(trials):
+                if verdict.unfillable:
+                    refuted += 1
+                else:
+                    survivors.append(key)
+            print(f"round {rnd}: {refuted} refuted by arc consistency, "
+                  f"{len(survivors)} survive", flush=True)
+
+            if not survivors:
+                print(f"round {rnd}: SATURATED -- every remaining placement is provably "
+                      f"unfillable")
+                break
+
+            # Stage 2: try to fill the survivors, longest entry first, and stop at the first
+            # one that actually fills.
+            order = {key: i for i, (key, _) in enumerate(trials)}
+            survivors.sort(key=lambda key: order[key])
+            chosen, unknown = None, 0
+            for key, verdict in pool.probe_many(
+                [(key, work_by_key[key]) for key in survivors],
+                ms=args.probe_ms,
+                want_fill=True,
+                stop_on=lambda verdict: verdict.fillable,
+            ):
+                word, slot = key
+                print(f"  {word:<13} {slot} {verdict.state}", flush=True)
+                if verdict.fillable:
+                    chosen = (word, slot, work_by_key[key], list(verdict.fill))
+                elif verdict.unknown:
+                    unknown += 1
+
+            if chosen is None:
+                print(f"round {rnd}: nothing placeable, stopping -- "
+                      f"{unknown} candidate(s) ran out of budget at {args.probe_ms} ms, "
+                      f"so this is NOT a proof of saturation")
+                break
+
+            word, slot, work, fill = chosen
+            grid = work
+            placed.append(word)
+            best_fill = fill
+            print(f"round {rnd}: PLACED {word} at {slot}", flush=True)
 
     Path(args.out).write_text(dump(grid), encoding="utf-8")
     if best_fill:

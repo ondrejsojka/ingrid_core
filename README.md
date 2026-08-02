@@ -102,10 +102,10 @@ standard tiers alike — a blocked word cannot sneak back in through the preferr
 $ ingrid_core --help
 Crossword-generating library and CLI tool
 
-Usage: ingrid_core [OPTIONS] <GRID_PATH>
+Usage: ingrid_core [OPTIONS] [GRID_PATH]
 
 Arguments:
-  <GRID_PATH>  Path to the grid file, as ASCII with # representing blocks and . representing empty squares
+  [GRID_PATH]  Path to the grid file, as ASCII with # representing blocks and . representing empty squares. Omitted with --serve, which reads templates from stdin instead
 
 Options:
       --wordlist <WORDLIST>
@@ -118,6 +118,8 @@ Options:
           Minimum allowable word score [default: 50]
       --max-shared-substring <MAX_SHARED_SUBSTRING>
           Maximum shared substring length between entries [default: none]
+      --dupe-exempt-preferred
+          Ignore shared-substring duplicates when both entries are preferred-tier; pairs involving a standard-only entry and whole-word duplicates are still enforced
       --ignore-diacritics
           Convert accented letters to their unaccented forms in the grid and word lists
       --cores <CORES>
@@ -140,6 +142,12 @@ Options:
           Probability of following the incumbent value at each sampled decision [default: 0.98]
   -t, --time
           Print timing information along with the grid
+      --serve
+          Load the word lists once and then answer fillability questions from stdin forever, one template per line with rows joined by `/`; see `oracle.md` for the protocol
+      --probe-time <PROBE_TIME>
+          Default per-probe search budget in milliseconds after arc consistency (--serve only); 0 answers from arc consistency alone, which can prove `unfillable` but never `fillable` [default: 0]
+      --max-length <MAX_LENGTH>
+          Longest slot the oracle will be asked about (--serve only); shorter values load fewer words
   -h, --help
           Print help
   -V, --version
@@ -160,6 +168,35 @@ For example:
 ```
 $ ingrid_core --preferred-wordlist theme.dict --wordlist standard.dict --cores 8 example_grid.txt
 ```
+
+### Persistent fillability oracle
+
+A template search asks "is this grid still fillable?" thousands of times, and a one-shot
+`ingrid_core` invocation spends seconds loading word lists and microseconds answering. `--serve`
+inverts that: load once, then answer one probe per line of stdin.
+
+```
+$ ingrid_core --serve --wordlist standard.dict --preferred-wordlist theme.dict \
+    --min-score 33 --max-shared-substring 5 --dupe-exempt-preferred
+ready words=160469 max_length=21 min_score=33 probe_ms=0 blocked=0 load_ms=460
+...#...#...#.../...#...#...#.../.......#.......
+unknown slots=88 min_domain=1189 setup_us=19842 ac_us=35913 us=62901
+```
+
+Answers are three-valued: `unfillable` is a proof from constraint propagation or an exhausted
+search tree, `fillable` means a fill was found, and `unknown` means the budget ran out — which is
+not a rejection. The default budget is zero, i.e. answer from initial arc consistency alone, which
+is the cheap setting that prunes hard and never guesses.
+
+The corpus does not drift. A grid with fully specified slots forces hidden entries into the word
+list and its shared-substring index; every probe undoes exactly those additions afterwards, so the
+thousandth question is answered against the dictionary the campaign was configured with.
+
+`scripts/oracle.py` wraps the protocol for Python callers, including a process pool for
+parallel probing; `scripts/pin_long.py` uses it to pin theme entries into a template, and
+`scripts/screen_audit.py` measures how often the propagation screen accepts a grid that then
+turns out not to fill. The protocol, the library entry point (`ingrid_core::oracle::Oracle`), and
+measured probe costs are documented in [`oracle.md`](oracle.md).
 
 ### Czech Metropolitan recipe
 

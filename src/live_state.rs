@@ -31,6 +31,29 @@ impl PreparedSearch {
             initial_arc_consistency_time,
         })
     }
+
+    /// Time spent establishing initial arc consistency.
+    pub(crate) fn initial_arc_consistency_time(&self) -> Duration {
+        self.initial_arc_consistency_time
+    }
+
+    /// Smallest number of candidates any slot still has after initial arc consistency, counting a
+    /// fully specified slot as one. Zero is unreachable here: a wiped-out domain fails
+    /// construction instead.
+    pub(crate) fn min_remaining_options(&self) -> usize {
+        self.root
+            .slots
+            .iter()
+            .map(|slot| {
+                if slot.fixed_word_id.is_some() {
+                    1
+                } else {
+                    slot.remaining_option_count
+                }
+            })
+            .min()
+            .unwrap_or(0)
+    }
 }
 
 /// Reversible solver state for algorithms following one assignment path at a time.

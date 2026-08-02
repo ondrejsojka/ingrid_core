@@ -146,9 +146,12 @@ pub struct GridConfig<'a> {
     pub abort: Option<&'a AtomicBool>,
 }
 
-/// A struct that owns a copy of each piece of information needed by `GridConfig`.
+/// A struct that owns every piece of per-template setup a `GridConfig` needs.
+///
+/// The word list is deliberately *not* part of this: it is campaign state that outlives any single
+/// grid, and a long-lived caller configures thousands of grids against one corpus. `GridConfig`
+/// borrows both, so the corpus is supplied when the borrowed view is taken.
 pub struct OwnedGridConfig {
-    pub word_list: WordList,
     pub fill: Vec<Option<GlyphId>>,
     pub slot_configs: Vec<SlotConfig>,
     pub slot_options: Vec<Vec<WordId>>,
@@ -159,11 +162,14 @@ pub struct OwnedGridConfig {
 }
 
 impl OwnedGridConfig {
+    /// Borrow this template's setup together with the word list it was generated against. Passing
+    /// a different word list, or one that has been rewound past the ids in `slot_options`, is a
+    /// caller error.
     #[allow(dead_code)]
     #[must_use]
-    pub fn to_config_ref(&self) -> GridConfig<'_> {
+    pub fn to_config_ref<'a>(&'a self, word_list: &'a WordList) -> GridConfig<'a> {
         GridConfig {
-            word_list: &self.word_list,
+            word_list,
             fill: &self.fill,
             slot_configs: &self.slot_configs,
             slot_options: &self.slot_options,
@@ -516,34 +522,225 @@ pub fn generate_all_slot_options(
         .collect()
 }
 
-/// Generate an `OwnedGridConfig` representing a grid with specified entries.
+/// Whether a generated config's per-slot options should be ranked by [`sort_slot_options`].
+///
+/// Arc consistency computes the same closure whatever order the options are in, so a caller that
+/// only needs propagation — the fillability oracle answering from arc consistency alone — can skip
+/// the ranking pass, which is the more expensive half of building a config. Any caller that
+/// actually searches wants `Ranked`: the order is how the solver's value heuristic is expressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateOrder {
+    Ranked,
+    Unranked,
+}
+
+/// A validated crossword template: fixed letters, dimensions, slot topology, and the longest run
+/// of non-block cells.
+///
+/// This is the only template parser. The one-shot CLI and the persistent oracle both go through it,
+/// so validation and slot detection cannot drift apart, and a caller that has a `ParsedTemplate`
+/// knows the rows were rectangular and non-empty rather than having been quietly reshaped.
+#[derive(Debug, Clone)]
+pub struct ParsedTemplate {
+    pub width: usize,
+    pub height: usize,
+
+    /// Row-major fixed letters, lowercased. `None` for a block or an empty cell, which is exactly
+    /// what `GridConfig::fill` means.
+    pub fill: Vec<Option<char>>,
+
+    /// Every maximal run of two or more non-block cells, across and then down.
+    pub slots: Vec<SlotSpec>,
+
+    /// Length of the longest run of non-block cells in either direction, including runs of one.
+    /// A caller with a bounded dictionary compares this against its longest loaded word.
+    pub longest_run: usize,
+}
+
+/// Why a template string could not be turned into a [`ParsedTemplate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TemplateError {
+    NoRows,
+    EmptyRow {
+        row: usize,
+    },
+    RaggedRows {
+        row: usize,
+        expected: usize,
+        found: usize,
+    },
+}
+
+impl std::fmt::Display for TemplateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TemplateError::NoRows => write!(f, "template has no rows"),
+            TemplateError::EmptyRow { row } => write!(f, "row {row} is empty"),
+            TemplateError::RaggedRows {
+                row,
+                expected,
+                found,
+            } => write!(
+                f,
+                "rows must all be the same length: row {row} has {found}, expected {expected}"
+            ),
+        }
+    }
+}
+
+impl ParsedTemplate {
+    /// Parse a template with `#` for blocks, `.` for empty cells, and letters for fixed fill.
+    ///
+    /// Surrounding blank lines and per-row surrounding whitespace are ignored; an *interior* blank
+    /// row is an error rather than something to skip, because in a framed request (rows joined by
+    /// `/`) it is a genuinely malformed grid and skipping it would answer a different question.
+    pub fn parse(template: &str) -> Result<ParsedTemplate, TemplateError> {
+        let rows: Vec<&str> = template.trim().lines().map(str::trim).collect();
+        if rows.is_empty() {
+            return Err(TemplateError::NoRows);
+        }
+
+        let width = rows[0].chars().count();
+        if width == 0 {
+            return Err(TemplateError::EmptyRow { row: 0 });
+        }
+        for (index, row) in rows.iter().enumerate().skip(1) {
+            let found = row.chars().count();
+            if found == 0 {
+                return Err(TemplateError::EmptyRow { row: index });
+            }
+            if found != width {
+                return Err(TemplateError::RaggedRows {
+                    row: index,
+                    expected: width,
+                    found,
+                });
+            }
+        }
+
+        let height = rows.len();
+        let mut blocks = Vec::with_capacity(width * height);
+        let mut fill = Vec::with_capacity(width * height);
+        for row in &rows {
+            for cell in row.chars() {
+                blocks.push(cell == '#');
+                fill.push(match cell {
+                    '#' | '.' => None,
+                    letter => Some(
+                        letter
+                            .to_lowercase()
+                            .next()
+                            .expect("char::to_lowercase always yields at least one char"),
+                    ),
+                });
+            }
+        }
+
+        let mut slots = Vec::new();
+        let mut longest_run = 0;
+        let mut collect = |run: &[GridCoord], longest_run: &mut usize| {
+            *longest_run = (*longest_run).max(run.len());
+            if run.len() > 1 {
+                slots.push(SlotSpec {
+                    start_cell: run[0],
+                    length: run.len(),
+                    direction: if run[0].1 == run[1].1 {
+                        Direction::Across
+                    } else {
+                        Direction::Down
+                    },
+                });
+            }
+        };
+
+        let mut run: Vec<GridCoord> = Vec::with_capacity(width.max(height));
+        for y in 0..height {
+            run.clear();
+            for x in 0..width {
+                if blocks[y * width + x] {
+                    collect(&run, &mut longest_run);
+                    run.clear();
+                } else {
+                    run.push((x, y));
+                }
+            }
+            collect(&run, &mut longest_run);
+        }
+        for x in 0..width {
+            run.clear();
+            for y in 0..height {
+                if blocks[y * width + x] {
+                    collect(&run, &mut longest_run);
+                    run.clear();
+                } else {
+                    run.push((x, y));
+                }
+            }
+            collect(&run, &mut longest_run);
+        }
+
+        Ok(ParsedTemplate {
+            width,
+            height,
+            fill,
+            slots,
+            longest_run,
+        })
+    }
+}
+
+/// Generate an `OwnedGridConfig` representing a grid with specified entries and ranked candidates.
+///
+/// The word list is borrowed mutably because a fully specified slot needs a `WordId` for its
+/// letters whether or not they spell a dictionary entry, and unfamiliar characters need glyph ids.
+/// A caller that configures many grids against one corpus should bracket this with
+/// [`WordList::snapshot`] and [`WordList::rewind`] to keep those additions template-local.
 #[must_use]
-pub fn generate_grid_config<'a>(
-    mut word_list: WordList,
-    entries: &'a [SlotSpec],
-    raw_fill: &'a [Option<String>],
+pub fn generate_grid_config(
+    word_list: &mut WordList,
+    entries: &[SlotSpec],
+    raw_fill: &[Option<char>],
     width: usize,
     height: usize,
     min_score: u16,
+) -> OwnedGridConfig {
+    generate_grid_config_with_order(
+        word_list,
+        entries,
+        raw_fill,
+        width,
+        height,
+        min_score,
+        CandidateOrder::Ranked,
+    )
+}
+
+/// Generate an `OwnedGridConfig`, choosing whether to rank each slot's options.
+#[must_use]
+pub fn generate_grid_config_with_order(
+    word_list: &mut WordList,
+    entries: &[SlotSpec],
+    raw_fill: &[Option<char>],
+    width: usize,
+    height: usize,
+    min_score: u16,
+    order: CandidateOrder,
 ) -> OwnedGridConfig {
     let (slot_configs, crossing_count) = generate_slot_configs(entries);
 
     let fill: Vec<Option<GlyphId>> = raw_fill
         .iter()
-        .map(|cell_str| {
-            cell_str
-                .as_ref()
-                .map(|cell_str| word_list.glyph_id_for_char(cell_str.chars().next().unwrap()))
-        })
+        .map(|cell| cell.map(|cell| word_list.glyph_id_for_char(cell)))
         .collect();
 
     let mut slot_options =
-        generate_all_slot_options(&mut word_list, &fill, &slot_configs, width, min_score);
+        generate_all_slot_options(word_list, &fill, &slot_configs, width, min_score);
 
-    sort_slot_options(&word_list, &slot_configs, &mut slot_options);
+    if order == CandidateOrder::Ranked {
+        sort_slot_options(word_list, &slot_configs, &mut slot_options);
+    }
 
     OwnedGridConfig {
-        word_list,
         fill,
         slot_configs,
         slot_options,
@@ -554,118 +751,38 @@ pub fn generate_grid_config<'a>(
     }
 }
 
-/// Generate a list of `SlotSpec`s from a template string with . representing empty cells, # representing
-/// blocks, and letters representing themselves.
-#[allow(dead_code)]
+/// Generate an `OwnedGridConfig` from an already validated template.
 #[must_use]
-pub fn generate_slots_from_template_string(template: &str) -> Vec<SlotSpec> {
-    fn build_words(template: &[Vec<char>]) -> Vec<Vec<GridCoord>> {
-        let mut result: Vec<Vec<GridCoord>> = vec![];
-
-        for (y, line) in template.iter().enumerate() {
-            let mut current_word_coords: Vec<GridCoord> = vec![];
-
-            for (x, &cell) in line.iter().enumerate() {
-                if cell == '#' {
-                    if current_word_coords.len() > 1 {
-                        result.push(current_word_coords);
-                    }
-                    current_word_coords = vec![];
-                } else {
-                    current_word_coords.push((x, y));
-                }
-            }
-
-            if current_word_coords.len() > 1 {
-                result.push(current_word_coords);
-            }
-        }
-
-        result
-    }
-
-    let template: Vec<Vec<char>> = template
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if line.is_empty() {
-                None
-            } else {
-                Some(line.chars().collect())
-            }
-        })
-        .collect();
-
-    let mut slot_specs: Vec<SlotSpec> = vec![];
-
-    for coords in build_words(&template) {
-        slot_specs.push(SlotSpec {
-            start_cell: coords[0],
-            length: coords.len(),
-            direction: Direction::Across,
-        });
-    }
-
-    let transposed_template: Vec<Vec<char>> = (0..template[0].len())
-        .map(|y| (0..template.len()).map(|x| template[x][y]).collect())
-        .collect();
-
-    for coords in build_words(&transposed_template) {
-        let coords: Vec<GridCoord> = coords.iter().copied().map(|(y, x)| (x, y)).collect();
-        slot_specs.push(SlotSpec {
-            start_cell: coords[0],
-            length: coords.len(),
-            direction: Direction::Down,
-        });
-    }
-
-    slot_specs
+pub fn generate_grid_config_from_parsed(
+    word_list: &mut WordList,
+    template: &ParsedTemplate,
+    min_score: u16,
+    order: CandidateOrder,
+) -> OwnedGridConfig {
+    generate_grid_config_with_order(
+        word_list,
+        &template.slots,
+        &template.fill,
+        template.width,
+        template.height,
+        min_score,
+        order,
+    )
 }
 
-/// Generate an `OwnedGridConfig` from a template string with . representing empty cells, # representing
-/// blocks, and letters representing themselves.
-#[allow(dead_code)]
-#[must_use]
+/// Parse a template string and generate an `OwnedGridConfig` with ranked candidates.
 pub fn generate_grid_config_from_template_string(
-    word_list: WordList,
+    word_list: &mut WordList,
     template: &str,
     min_score: u16,
-) -> OwnedGridConfig {
-    let slot_specs = generate_slots_from_template_string(template);
-
-    let fill: Vec<Vec<Option<String>>> = template
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if line.is_empty() {
-                None
-            } else {
-                Some(
-                    line.chars()
-                        .map(|c| {
-                            if c == '.' || c == '#' {
-                                None
-                            } else {
-                                Some(c.to_lowercase().to_string())
-                            }
-                        })
-                        .collect(),
-                )
-            }
-        })
-        .collect();
-
-    let width = fill[0].len();
-    let height = fill.len();
-
-    generate_grid_config(
+) -> Result<OwnedGridConfig, TemplateError> {
+    let template = ParsedTemplate::parse(template)?;
+    Ok(generate_grid_config_from_parsed(
         word_list,
-        &slot_specs,
-        &fill.into_iter().flatten().collect::<Vec<_>>(),
-        width,
-        height,
+        &template,
         min_score,
-    )
+        CandidateOrder::Ranked,
+    ))
 }
 
 /// A struct recording a slot assignment made during a fill process.
@@ -713,6 +830,104 @@ pub fn render_grid(config: &GridConfig, choices: &[Choice]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod template_tests {
+    use crate::grid_config::{Direction, ParsedTemplate, SlotSpec, TemplateError};
+
+    #[test]
+    fn a_template_yields_across_and_down_slots_and_fixed_letters() {
+        let parsed = ParsedTemplate::parse("AB#\n..#\n...\n").unwrap();
+        assert_eq!((parsed.width, parsed.height), (3, 3));
+        assert_eq!(parsed.fill[0], Some('a'), "letters are lowercased");
+        assert_eq!(parsed.fill[1], Some('b'));
+        assert_eq!(parsed.fill[2], None, "a block holds no letter");
+        assert_eq!(parsed.fill[6], None, "an empty cell holds no letter");
+        assert_eq!(
+            parsed.slots,
+            vec![
+                SlotSpec {
+                    start_cell: (0, 0),
+                    length: 2,
+                    direction: Direction::Across
+                },
+                SlotSpec {
+                    start_cell: (0, 1),
+                    length: 2,
+                    direction: Direction::Across
+                },
+                SlotSpec {
+                    start_cell: (0, 2),
+                    length: 3,
+                    direction: Direction::Across
+                },
+                SlotSpec {
+                    start_cell: (0, 0),
+                    length: 3,
+                    direction: Direction::Down
+                },
+                SlotSpec {
+                    start_cell: (1, 0),
+                    length: 3,
+                    direction: Direction::Down
+                },
+            ]
+        );
+        assert_eq!(parsed.longest_run, 3);
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_cosmetic_but_an_interior_blank_row_is_not() {
+        let indented = ParsedTemplate::parse("\n  ...  \n  .#.  \n\n").unwrap();
+        assert_eq!((indented.width, indented.height), (3, 2));
+
+        // Rows arrive framed (joined by `/`) from the oracle protocol, so a blank row is a real
+        // row of width zero, not stray formatting. Dropping it would answer a different question.
+        assert_eq!(
+            ParsedTemplate::parse("...\n\n...").unwrap_err(),
+            TemplateError::EmptyRow { row: 1 }
+        );
+        assert_eq!(
+            ParsedTemplate::parse("   ").unwrap_err(),
+            TemplateError::NoRows
+        );
+    }
+
+    #[test]
+    fn ragged_rows_name_the_offending_row() {
+        assert_eq!(
+            ParsedTemplate::parse("...\n...\n....").unwrap_err(),
+            TemplateError::RaggedRows {
+                row: 2,
+                expected: 3,
+                found: 4
+            }
+        );
+    }
+
+    #[test]
+    fn a_single_cell_run_is_measured_but_is_not_a_slot() {
+        // The middle column is one cell tall between two blocks: too short to clue, but it still
+        // has to be counted when a caller checks the template against its longest loaded word.
+        let parsed = ParsedTemplate::parse("#.#\n...\n#.#").unwrap();
+        assert_eq!(parsed.longest_run, 3);
+        assert!(parsed.slots.iter().all(|slot| slot.length > 1));
+        assert_eq!(
+            ParsedTemplate::parse("#.#").unwrap().longest_run,
+            1,
+            "a lone cell still contributes its length"
+        );
+        assert!(ParsedTemplate::parse("#.#").unwrap().slots.is_empty());
+    }
+
+    #[test]
+    fn blocks_break_runs_in_both_directions() {
+        let parsed = ParsedTemplate::parse("....#....\n").unwrap();
+        assert_eq!(parsed.longest_run, 4);
+        let parsed = ParsedTemplate::parse(".\n.\n.\n.\n#\n.\n.\n").unwrap();
+        assert_eq!(parsed.longest_run, 4);
+    }
 }
 
 #[cfg(all(test, feature = "serde"))]

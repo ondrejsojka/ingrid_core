@@ -36,7 +36,21 @@ impl<const WINDOW_SIZE: usize> Default for DupeIndex<WINDOW_SIZE> {
 /// Interface representing a `DupeIndex` with any window size.
 pub trait AnyDupeIndex {
     fn window_size(&self) -> usize;
+
+    /// Number of substring groups tracked. Together with `indexed_word_count` this makes an
+    /// `add_word`/`remove_word` pair checkable: both must return to their earlier values.
+    fn group_count(&self) -> usize;
+
+    /// Number of words the index holds substring groups for.
+    fn indexed_word_count(&self) -> usize;
     fn add_word(&mut self, word_id: WordId, word: &Word);
+
+    /// Undo one `add_word`, restoring the index to the state it had before that call.
+    ///
+    /// Only the word's own entries are removed. Explicit dupe pairs naming it from the other side
+    /// are not swept, because words that are added and removed again are template-local hidden
+    /// entries, which never take part in an `add_dupe_pair`.
+    fn remove_word(&mut self, word_id: WordId, word: &Word);
     fn add_dupe_pair(&mut self, global_word_id_1: GlobalWordId, global_word_id_2: GlobalWordId);
     fn remove_dupe_pair(&mut self, global_word_id_1: GlobalWordId, global_word_id_2: GlobalWordId);
 
@@ -63,6 +77,14 @@ impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
     /// shared to count as a dupe).
     fn window_size(&self) -> usize {
         WINDOW_SIZE
+    }
+
+    fn group_count(&self) -> usize {
+        self.groups.len()
+    }
+
+    fn indexed_word_count(&self) -> usize {
+        self.group_keys_by_word.len()
     }
 
     /// Record a word in the index, adding it to the groups representing each of its
@@ -118,6 +140,34 @@ impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
         ] {
             if let Some(existing_group) = self.extra_dupes_by_word.get_mut(&from_id) {
                 existing_group.retain(|id| *id != to_id);
+            }
+        }
+    }
+
+    /// Remove a word previously passed to `add_word`. Groups that become empty are kept for reuse
+    /// unless they are the most recent ones, in which case they are popped along with the
+    /// substring key that names them; that keeps a repeated add/remove cycle from growing the
+    /// index.
+    fn remove_word(&mut self, word_id: WordId, word: &Word) {
+        let global_word_id = (word.glyphs.len(), word_id);
+        self.extra_dupes_by_word.remove(&global_word_id);
+
+        if WINDOW_SIZE == 0 {
+            return;
+        }
+        self.group_keys_by_word.remove(&global_word_id);
+
+        // Reverse order, because `add_word` appends new groups as it walks forward, so the last
+        // substring owns the newest group and pops cleanly.
+        for substring_slice in word.glyphs.windows(WINDOW_SIZE).rev() {
+            let substring: [GlyphId; WINDOW_SIZE] = substring_slice.try_into().unwrap();
+            let Some(&group_key) = self.group_key_by_substring.get(&substring) else {
+                continue;
+            };
+            self.groups[group_key].retain(|&id| id != global_word_id);
+            if self.groups[group_key].is_empty() && group_key + 1 == self.groups.len() {
+                self.groups.pop();
+                self.group_key_by_substring.remove(&substring);
             }
         }
     }
