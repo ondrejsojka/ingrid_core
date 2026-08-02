@@ -213,20 +213,22 @@ finished, deliver it, and submit one replacement per delivered non-match.
   `O(jobs)` and an endless generator of candidate placements is a legitimate argument. An earlier
   version drained the whole iterable before starting anything, which stalled the first probe
   behind a slow producer and would have hung forever on an infinite one.
-- **No probe is started once a matching answer exists**, whether or not it has been delivered.
-  Two things are needed for that, and each was wrong once. Probes finish in batches, so the turn
-  decides on *every* completed probe rather than on one arbitrary member of the set `wait` hands
-  back — deciding on one member lets a non-match beside the match start replacement work. And a
-  probe can finish while the caller is away between answers, so the code peeks for a landed match
-  before each submission rather than assuming nothing changed while it was suspended.
+- **No probe is started after a matching result has been observed.** Observation is made as
+  complete and as late as it can be, and each half of that was wrong once. Probes finish in
+  batches, so the turn decides on *every* completed probe rather than on one arbitrary member of
+  the set `wait` hands back — deciding on one member lets a non-match beside the match start
+  replacement work. And a probe can finish while the caller is away between answers, so the loop
+  looks again for a landed match immediately before each submission.
 - A finished answer is never held back waiting on the producer: the pull happens after the yield,
   not before it.
 - On a match, the probes still running and any that finished in the same batch are drained, their
   answers discarded, and the generator returns. Its runtime after a match is one probe, not the
   remaining work. Nothing here is described as cancellation, because none of it is.
 
-A probe that starts while a match is merely *running* is not a violation and cannot be avoided
-without giving up the window: nothing had been decided yet.
+What remains is the instant between that last look and a probe completing. A match that is merely
+*running* has not been decided on, and letting the window refill then is the window working, not a
+leak; the cost when it happens is one replacement probe that turns out to have been unnecessary.
+Closing that too would mean serialising the window, which is the thing the pool exists to avoid.
 
 `scripts/test_oracle_client.py` holds this down against a fake pool, with no binary and no timing
 assertions: each fake probe blocks on an event the test releases, and a `wait` shim manufactures

@@ -188,11 +188,6 @@ impl Oracle {
         })
     }
 
-    #[must_use]
-    pub fn options(&self) -> &OracleOptions {
-        &self.options
-    }
-
     /// Whether this oracle folds accented letters in templates, as its corpus does.
     #[must_use]
     pub fn converts_diacritics(&self) -> bool {

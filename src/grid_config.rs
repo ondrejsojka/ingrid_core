@@ -726,7 +726,7 @@ impl ParsedTemplate {
     }
 }
 
-/// Generate an `OwnedGridConfig` representing a grid with specified entries and ranked candidates.
+/// Generate an `OwnedGridConfig` representing a grid with specified entries.
 ///
 /// The word list goes in mutably because a fully specified slot needs a `WordId` for its letters
 /// whether or not they spell a dictionary entry, and unfamiliar characters need glyph ids. It
@@ -735,27 +735,6 @@ impl ParsedTemplate {
 /// rewind while the config is still alive.
 #[must_use]
 pub fn generate_grid_config<'a>(
-    word_list: &'a mut WordList,
-    entries: &[SlotSpec],
-    raw_fill: &[Option<char>],
-    width: usize,
-    height: usize,
-    min_score: u16,
-) -> OwnedGridConfig<'a> {
-    generate_grid_config_with_order(
-        word_list,
-        entries,
-        raw_fill,
-        width,
-        height,
-        min_score,
-        CandidateOrder::Ranked,
-    )
-}
-
-/// Generate an `OwnedGridConfig`, choosing whether to rank each slot's options.
-#[must_use]
-pub fn generate_grid_config_with_order<'a>(
     word_list: &'a mut WordList,
     entries: &[SlotSpec],
     raw_fill: &[Option<char>],
@@ -800,7 +779,7 @@ pub fn generate_grid_config_from_parsed<'a>(
     min_score: u16,
     order: CandidateOrder,
 ) -> OwnedGridConfig<'a> {
-    generate_grid_config_with_order(
+    generate_grid_config(
         word_list,
         &template.slots,
         &template.fill,

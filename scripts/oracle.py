@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import queue
+import select
 import shlex
 import subprocess
 import sys
@@ -186,9 +187,8 @@ class Oracle:
         if max_length is not None:
             argv += ["--max-length", str(max_length)]
 
-        self.argv = argv
-        self.probe_ms = probe_ms
         self._stderr: list[str] = []
+
         try:
             self._proc = subprocess.Popen(
                 argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -220,21 +220,33 @@ class Oracle:
         }
 
     def _drain_stderr(self):
-        for line in self._proc.stderr:
-            line = line.rstrip("\n")
-            if line:
-                self._stderr.append(line)
+        """Owns `self._proc.stderr` for its whole life, reading it and then closing it.
+
+        Closing it from another thread instead would block on the io lock for as long as this
+        read does, which is until the last holder of the write end goes away -- so tearing down a
+        child that has stopped talking would wait for exactly the thing we gave up waiting for.
+        """
+        try:
+            for line in self._proc.stderr:
+                line = line.rstrip("\n")
+                if line:
+                    self._stderr.append(line)
+        finally:
+            try:
+                self._proc.stderr.close()
+            except OSError:
+                pass
 
     def _read_line(self, timeout):
-        """Read one stdout line, or return None if the child neither answers nor exits in time."""
-        box = []
-        reader = threading.Thread(target=lambda: box.append(self._proc.stdout.readline()),
-                                  daemon=True)
-        reader.start()
-        reader.join(timeout)
-        if reader.is_alive():
+        """Read one stdout line, or return None if the child neither answers nor exits in time.
+
+        `select` is enough here because nothing has been read yet, so no partial line is sitting
+        in the buffer, and the banner is one short write well under `PIPE_BUF`: readability means
+        the whole line is there. POSIX only, which is all this repository targets.
+        """
+        if not select.select([self._proc.stdout], [], [], timeout)[0]:
             return None
-        return box[0].strip() if box and box[0] else ""
+        return self._proc.stdout.readline().strip()
 
     def _diagnosis(self, stdout_line=""):
         """Everything we know about a failure: the child's stderr, stdout and exit status."""
@@ -260,7 +272,8 @@ class Oracle:
         self._close_streams()
 
     def _close_streams(self):
-        for stream in (self._proc.stdin, self._proc.stdout, self._proc.stderr):
+        # Not stderr: `_drain_stderr` owns that one.
+        for stream in (self._proc.stdin, self._proc.stdout):
             if stream:
                 try:
                     stream.close()
@@ -356,19 +369,21 @@ class OraclePool:
         `O(jobs)` rather than `O(items)` and an endless generator of candidate placements is a
         perfectly good argument.
 
-        `stop_on` is a predicate on the verdict. Each turn takes the *whole* set of probes that
-        have completed and decides on all of them together, because `wait` hands back batches and
-        a match anywhere in a batch has to stop the batch. There is exactly one place in this loop
-        where work begins, and it runs only after a whole batch has been delivered without a
-        match, so **no probe is started once an answer matches**, and none is started while the
-        caller is between answers either. Answers that completed alongside a match are discarded
-        along with the probes still running.
+        `stop_on` is a predicate on the verdict, and the guarantee is that **no probe is started
+        after a matching result has been observed**. Observation is made as complete and as late
+        as it can be: each turn takes the *whole* set of probes that have finished rather than one
+        member of the batch `wait` reports, and the loop looks again for a landed match
+        immediately before each submission. What is left is the instant between that look and a
+        probe completing; a match that is merely still running has not been decided on, and
+        letting the window refill in that case is the window working as intended, not a leak. The
+        cost when it happens is one replacement probe that turns out to have been unnecessary.
 
-        There is deliberately no claim of cancellation: the protocol cannot abandon a probe the
-        child has already begun, so on a match the at most `jobs - 1` probes still running are
-        drained, their answers discarded, and only then does the generator return. Its runtime
-        after a match is one probe, not the remaining work. A caller that needs a tighter bound
-        should pass a smaller `ms`.
+        Answers that completed alongside a match are discarded along with the probes still
+        running. There is deliberately no claim of cancellation: the protocol cannot abandon a
+        probe the child has already begun, so on a match the at most `jobs - 1` probes still
+        running are drained and only then does the generator return. Its runtime after a match is
+        one probe, not the remaining work. A caller that needs a tighter bound should pass a
+        smaller `ms`.
 
         Uses the whole pool for its duration; a concurrent `probe()` call will wait.
         """
@@ -462,7 +477,6 @@ def add_oracle_arguments(parser: argparse.ArgumentParser):
                        help="longest slot the oracle will be asked about [default: 21]")
     group.add_argument("--seed", type=int, default=0, help="default: %(default)s")
     group.add_argument("--binary", default=DEFAULT_BINARY, help="default: %(default)s")
-    return group
 
 
 def oracle_kwargs(args, probe_ms=0) -> dict:

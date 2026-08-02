@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Contract tests for `scripts/oracle.py` that need no `ingrid_core` binary.
+"""Contract tests for `scripts/oracle.py`.
 
-The two things worth pinning here are the ones green Rust tests cannot see: the row handling that
-decides *which* grid the engine is asked about, and the pool's concurrency contract. Both were
-wrong in ways that produced confident answers to the wrong question.
+The things worth pinning here are the ones green Rust tests cannot see: the row handling that
+decides *which* grid the engine is asked about, the pool's concurrency contract, and the startup
+teardown. All three were wrong at some point in ways that produced a confident answer to the
+wrong question, or a hang.
+
+Everything runs against fakes and needs no `ingrid_core` binary. One test spawns a deliberately
+silent child; it is the only one that costs more than milliseconds.
 
 Run with `python3 scripts/test_oracle_client.py` (or under pytest; the assertions are plain).
 """
@@ -11,7 +15,9 @@ Run with `python3 scripts/test_oracle_client.py` (or under pytest; the assertion
 from __future__ import annotations
 
 import queue
+import stat
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import ALL_COMPLETED, FIRST_COMPLETED
@@ -20,7 +26,31 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import oracle  # noqa: E402
-from oracle import OraclePool, Verdict, _as_rows  # noqa: E402
+from oracle import Oracle, OracleError, OraclePool, Verdict, _as_rows  # noqa: E402
+
+
+def test_a_silent_child_times_out_without_waiting_for_it():
+    """Startup teardown must not block on the child it just gave up on.
+
+    Closing the child's stderr from the constructor's thread parks on the io lock until the drain
+    thread's read finishes -- which is when the child finally exits. That turned a one-second
+    startup timeout into a thirty-second one. The margin below is 20x, so it is a statement about
+    who waits for whom rather than about scheduling.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        silent = Path(directory) / "silent.sh"
+        silent.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+        silent.chmod(silent.stat().st_mode | stat.S_IEXEC)
+
+        started = time.monotonic()
+        try:
+            Oracle(binary=str(silent), startup_timeout=0.5)
+        except OracleError as error:
+            assert "no ready banner" in str(error), error
+        else:
+            raise AssertionError("a child that never speaks must not be accepted")
+        elapsed = time.monotonic() - started
+        assert elapsed < 10, f"teardown waited {elapsed:.1f}s for a child it had abandoned"
 
 
 def test_surrounding_blank_rows_are_cosmetic():
