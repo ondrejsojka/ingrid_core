@@ -243,27 +243,29 @@ impl Oracle {
         };
 
         let corpus = self.word_list.snapshot();
-        let owned = generate_grid_config_from_parsed(
-            &mut self.word_list,
-            &parsed,
-            self.options.min_score,
-            order,
-        );
-        let setup_time = start.elapsed();
-
-        let probe = run_probe(
-            &owned,
-            &self.word_list,
-            budget,
-            probe_options.want_fill,
-            self.options.seed,
-            start,
-            setup_time,
-        );
+        // The config borrows the corpus for as long as it lives, so the rewind below could not
+        // even be written inside this block: the borrow checker, not a convention, is what keeps
+        // a config from outliving the word ids it holds.
+        let probe = {
+            let owned = generate_grid_config_from_parsed(
+                &mut self.word_list,
+                &parsed,
+                self.options.min_score,
+                order,
+            );
+            let setup_time = start.elapsed();
+            run_probe(
+                &owned,
+                budget,
+                probe_options.want_fill,
+                self.options.seed,
+                start,
+                setup_time,
+            )
+        };
 
         // Drop this grid's forced entries before answering, so the next probe sees the corpus the
         // campaign was configured with.
-        drop(owned);
         self.word_list.rewind(&corpus);
         self.probe_count += 1;
         Ok(probe)
@@ -291,17 +293,16 @@ impl Oracle {
 }
 
 /// Decide one already-configured template. Split out from [`Oracle::probe_with`] so that the
-/// corpus is rewound on every path, and so that the borrowed view lives no longer than the answer.
+/// borrowed view lives no longer than the answer, which is what lets the caller rewind afterwards.
 fn run_probe(
     owned: &OwnedGridConfig,
-    word_list: &WordList,
     budget: Duration,
     want_fill: bool,
     seed: u64,
     start: Instant,
     setup_time: Duration,
 ) -> Probe {
-    let config = owned.to_config_ref(word_list);
+    let config = owned.to_config_ref();
     let slot_count = config.slot_configs.len();
 
     // Initial arc consistency has no deadline and the oracle never sets an abort flag, so a
@@ -680,8 +681,8 @@ mod tests {
                 "ranking changed a domain size for {template:?}"
             );
             match (
-                PreparedSearch::new(&ranked.to_config_ref(&ranked_list)),
-                PreparedSearch::new(&unranked.to_config_ref(&unranked_list)),
+                PreparedSearch::new(&ranked.to_config_ref()),
+                PreparedSearch::new(&unranked.to_config_ref()),
             ) {
                 (Ok(ranked), Ok(unranked)) => assert_eq!(
                     ranked.min_remaining_options(),

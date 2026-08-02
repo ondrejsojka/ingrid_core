@@ -433,7 +433,7 @@ fn fill_once(args: &Args, normalization: Option<NormalizationSettings>) -> Resul
 
     let timeout = (args.timeout != 0).then(|| Duration::from_secs(args.timeout));
     let worker_count = args.cores.map(NonZeroUsize::get);
-    let config_ref = grid_config.to_config_ref(&word_list);
+    let config_ref = grid_config.to_config_ref();
     let search_start = Instant::now();
     let deadline = timeout.map(|timeout| search_start + timeout);
     let prepared = prepare_search(&config_ref).map_err(fill_failure_error)?;

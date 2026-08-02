@@ -604,20 +604,9 @@ mod tests {
     use crate::word_list::WordList;
     use std::time::Instant;
 
-    fn generate_config(template: &str) -> (WordList, OwnedGridConfig) {
-        let template = template.trim();
-        let width = template.lines().map(str::len).max().unwrap();
-        let height = template.lines().count();
-        let mut word_list = WordList::new(
-            word_list_source_config(),
-            None,
-            Some(width.max(height)),
-            Some(5),
-        );
-
-        let config = generate_grid_config_from_template_string(&mut word_list, template, 40)
-            .expect("test template is valid");
-        (word_list, config)
+    fn generate_config<'a>(word_list: &'a mut WordList, template: &str) -> OwnedGridConfig<'a> {
+        generate_grid_config_from_template_string(word_list, template, 40)
+            .expect("test template is valid")
     }
 
     #[test]
@@ -625,8 +614,7 @@ mod tests {
         // This grid is Ryan McCarty's "Chasm No. 1", with some words populated (including all the
         // words in the real puzzle that don't have a score of 40 or higher in STWL), as a
         // representative example of a very open grid.
-        let (word_list, mut grid_config) = generate_config(
-            "
+        let template = "
             smashcake###.e.
             ......l..##..d.
             oreothins#...g.
@@ -646,12 +634,24 @@ mod tests {
             .....#.........
             ....##.........
             ...###badassery
-            ",
-        );
+            ";
+
+        let mut word_list = {
+            let template = template.trim();
+            let width = template.lines().map(str::len).max().unwrap();
+            let height = template.lines().count();
+            WordList::new(
+                word_list_source_config(),
+                None,
+                Some(width.max(height)),
+                Some(5),
+            )
+        };
+        let mut grid_config = generate_config(&mut word_list, template);
 
         let start = Instant::now();
 
-        let config_ref = grid_config.to_config_ref(&word_list);
+        let config_ref = grid_config.to_config_ref();
         let mut eliminations_by_slot =
             EliminationSet::build_all(config_ref.slot_configs, config_ref.word_list);
         establish_arc_consistency_for_static_grid(&config_ref, &mut eliminations_by_slot)

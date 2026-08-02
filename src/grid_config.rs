@@ -146,12 +146,16 @@ pub struct GridConfig<'a> {
     pub abort: Option<&'a AtomicBool>,
 }
 
-/// A struct that owns every piece of per-template setup a `GridConfig` needs.
+/// A struct that owns every piece of per-template setup a `GridConfig` needs, and borrows the
+/// corpus those `WordId`s index into.
 ///
-/// The word list is deliberately *not* part of this: it is campaign state that outlives any single
-/// grid, and a long-lived caller configures thousands of grids against one corpus. `GridConfig`
-/// borrows both, so the corpus is supplied when the borrowed view is taken.
-pub struct OwnedGridConfig {
+/// The corpus is campaign state that outlives any single grid, so it is not owned here — a
+/// long-lived caller configures thousands of grids against one word list. It is *borrowed* rather
+/// than passed in later so that the borrow checker enforces what a comment cannot: the word list
+/// cannot be mutated, rewound, or swapped for a different one while a config that indexes into it
+/// is still alive.
+pub struct OwnedGridConfig<'a> {
+    pub word_list: &'a WordList,
     pub fill: Vec<Option<GlyphId>>,
     pub slot_configs: Vec<SlotConfig>,
     pub slot_options: Vec<Vec<WordId>>,
@@ -161,15 +165,12 @@ pub struct OwnedGridConfig {
     pub abort: Option<Arc<AtomicBool>>,
 }
 
-impl OwnedGridConfig {
-    /// Borrow this template's setup together with the word list it was generated against. Passing
-    /// a different word list, or one that has been rewound past the ids in `slot_options`, is a
-    /// caller error.
+impl OwnedGridConfig<'_> {
     #[allow(dead_code)]
     #[must_use]
-    pub fn to_config_ref<'a>(&'a self, word_list: &'a WordList) -> GridConfig<'a> {
+    pub fn to_config_ref(&self) -> GridConfig<'_> {
         GridConfig {
-            word_list,
+            word_list: self.word_list,
             fill: &self.fill,
             slot_configs: &self.slot_configs,
             slot_options: &self.slot_options,
@@ -691,19 +692,20 @@ impl ParsedTemplate {
 
 /// Generate an `OwnedGridConfig` representing a grid with specified entries and ranked candidates.
 ///
-/// The word list is borrowed mutably because a fully specified slot needs a `WordId` for its
-/// letters whether or not they spell a dictionary entry, and unfamiliar characters need glyph ids.
-/// A caller that configures many grids against one corpus should bracket this with
-/// [`WordList::snapshot`] and [`WordList::rewind`] to keep those additions template-local.
+/// The word list goes in mutably because a fully specified slot needs a `WordId` for its letters
+/// whether or not they spell a dictionary entry, and unfamiliar characters need glyph ids. It
+/// comes back out as the config's immutable borrow, so a caller that brackets this with
+/// [`WordList::snapshot`] and [`WordList::rewind`] to keep those additions template-local cannot
+/// rewind while the config is still alive.
 #[must_use]
-pub fn generate_grid_config(
-    word_list: &mut WordList,
+pub fn generate_grid_config<'a>(
+    word_list: &'a mut WordList,
     entries: &[SlotSpec],
     raw_fill: &[Option<char>],
     width: usize,
     height: usize,
     min_score: u16,
-) -> OwnedGridConfig {
+) -> OwnedGridConfig<'a> {
     generate_grid_config_with_order(
         word_list,
         entries,
@@ -717,15 +719,15 @@ pub fn generate_grid_config(
 
 /// Generate an `OwnedGridConfig`, choosing whether to rank each slot's options.
 #[must_use]
-pub fn generate_grid_config_with_order(
-    word_list: &mut WordList,
+pub fn generate_grid_config_with_order<'a>(
+    word_list: &'a mut WordList,
     entries: &[SlotSpec],
     raw_fill: &[Option<char>],
     width: usize,
     height: usize,
     min_score: u16,
     order: CandidateOrder,
-) -> OwnedGridConfig {
+) -> OwnedGridConfig<'a> {
     let (slot_configs, crossing_count) = generate_slot_configs(entries);
 
     let fill: Vec<Option<GlyphId>> = raw_fill
@@ -741,6 +743,9 @@ pub fn generate_grid_config_with_order(
     }
 
     OwnedGridConfig {
+        // Downgrading the mutable borrow here is what closes the door: nothing can touch the
+        // corpus again until this config is dropped.
+        word_list,
         fill,
         slot_configs,
         slot_options,
@@ -753,12 +758,12 @@ pub fn generate_grid_config_with_order(
 
 /// Generate an `OwnedGridConfig` from an already validated template.
 #[must_use]
-pub fn generate_grid_config_from_parsed(
-    word_list: &mut WordList,
+pub fn generate_grid_config_from_parsed<'a>(
+    word_list: &'a mut WordList,
     template: &ParsedTemplate,
     min_score: u16,
     order: CandidateOrder,
-) -> OwnedGridConfig {
+) -> OwnedGridConfig<'a> {
     generate_grid_config_with_order(
         word_list,
         &template.slots,
@@ -771,11 +776,11 @@ pub fn generate_grid_config_from_parsed(
 }
 
 /// Parse a template string and generate an `OwnedGridConfig` with ranked candidates.
-pub fn generate_grid_config_from_template_string(
-    word_list: &mut WordList,
+pub fn generate_grid_config_from_template_string<'a>(
+    word_list: &'a mut WordList,
     template: &str,
     min_score: u16,
-) -> Result<OwnedGridConfig, TemplateError> {
+) -> Result<OwnedGridConfig<'a>, TemplateError> {
     let template = ParsedTemplate::parse(template)?;
     Ok(generate_grid_config_from_parsed(
         word_list,

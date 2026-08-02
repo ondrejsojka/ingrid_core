@@ -92,14 +92,29 @@ class Verdict:
 
 
 def _as_rows(grid) -> list[str]:
-    """Accept a string, a list of strings, or a list of lists of single characters."""
+    """Accept a string, a list of strings, or a list of lists of single characters.
+
+    Surrounding blank rows are cosmetic and dropped, exactly as the Rust parser drops them. An
+    *interior* blank row is not: it is a malformed grid, and it is passed through so the engine
+    rejects it, rather than silently deleted so the caller gets a confident verdict about a
+    different, smaller template.
+    """
     if isinstance(grid, str):
-        rows = grid.strip().splitlines()
+        rows = grid.splitlines()
     else:
-        rows = ["".join(row) if not isinstance(row, str) else row for row in grid]
-    rows = [row.strip() for row in rows if row.strip()]
+        rows = [row if isinstance(row, str) else "".join(row) for row in grid]
+    rows = [row.strip() for row in rows]
+    while rows and not rows[0]:
+        rows.pop(0)
+    while rows and not rows[-1]:
+        rows.pop()
     if not rows:
         raise ValueError("grid has no rows")
+    for index, row in enumerate(rows):
+        # `/` frames the rows on the wire and whitespace ends the template token, so a row
+        # containing either would silently reframe the request.
+        if "/" in row or any(ch.isspace() for ch in row):
+            raise ValueError(f"row {index} contains a separator character: {row!r}")
     return rows
 
 
@@ -335,10 +350,12 @@ class OraclePool:
     def probe_many(self, items, ms=None, want_fill=False, stop_on=None):
         """Probe `(key, grid)` pairs, yielding `(key, verdict)` as answers arrive.
 
-        At most `jobs` probes are in flight at any moment. `stop_on` is a predicate on the
-        verdict; once one matches, **no further probe is started** -- a worker may only pick up
-        the next item against a credit that this generator hands out as it consumes answers, so
-        there is no window in which a worker races ahead of the decision.
+        At most `jobs` probes are in flight at any moment, and once `stop_on` matches an answer,
+        **no further probe is started**. Two mechanisms together give that: a worker may only take
+        the next item against a credit this generator hands out per answer consumed, and the match
+        is evaluated and recorded before any credit is released and before the value is yielded.
+        Handing out the credit first -- or deciding only after the caller resumes the generator --
+        leaves a window in which a worker picks up more work while the decision is already known.
 
         There is deliberately no claim of cancellation: the protocol cannot abandon a probe the
         child has already begun, so on a match the generator drains the probes still running --
@@ -353,21 +370,32 @@ class OraclePool:
             pending.put(item)
         answers: queue.Queue = queue.Queue()
         stop = threading.Event()
+        # Guards the handout so that "is there work left" and "have we stopped" are decided
+        # together; without it a worker could take an item in the instant between the generator
+        # seeing a match and recording it.
+        handout = threading.Lock()
         # One credit per in-flight probe. The generator returns a credit for every answer it
-        # consumes and keeps them all once it is stopping.
+        # consumes and keeps them all from the matching answer onwards.
         credits = threading.Semaphore(len(self._all))
+
+        def take():
+            with handout:
+                if stop.is_set():
+                    return None
+                try:
+                    return pending.get_nowait()
+                except queue.Empty:
+                    return None
 
         def worker():
             oracle = self._free.get()
             try:
-                while not stop.is_set():
+                while True:
                     credits.acquire()
-                    if stop.is_set():
+                    item = take()
+                    if item is None:
                         break
-                    try:
-                        key, grid = pending.get_nowait()
-                    except queue.Empty:
-                        break
+                    key, grid = item
                     try:
                         verdict = oracle.probe(grid, ms=ms, want_fill=want_fill)
                     except Exception as error:  # noqa: BLE001 - re-raised in the consumer
@@ -391,12 +419,18 @@ class OraclePool:
                 key, verdict, error = answer
                 if error is not None:
                     raise error
-                credits.release()
+                matched = stop_on is not None and stop_on(verdict)
+                if matched:
+                    with handout:
+                        stop.set()
+                else:
+                    credits.release()
                 yield key, verdict
-                if stop_on is not None and stop_on(verdict):
+                if matched:
                     return
         finally:
-            stop.set()
+            with handout:
+                stop.set()
             # Wake anyone parked on a credit so the drain can finish.
             for _ in workers:
                 credits.release()

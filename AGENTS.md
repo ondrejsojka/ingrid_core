@@ -99,7 +99,7 @@ Python scripts generally emit deterministic `word;score` dictionaries and option
 - `README.md`: canonical CLI and Czech word-source workflows.
 - `fill-margin.md`: operational interpretation of the fillability screen.
 - `oracle.md`: oracle protocol, library entry point, measured probe costs, and the score-semantics/arc-consistency findings behind them.
-- `scripts/oracle.py`: `--serve` client, `OraclePool`, and the three-valued `Verdict` whose `__bool__` raises on purpose. `scripts/screen_audit.py` measures the arc-consistency screen against real fill attempts.
+- `scripts/oracle.py`: `--serve` client, `OraclePool`, and the three-valued `Verdict` whose `__bool__` raises on purpose; `scripts/test_oracle_client.py` covers its row handling and pool concurrency with no binary. `scripts/screen_audit.py` measures the arc-consistency screen against real fill attempts.
 - `.gitignore`: excludes `target/`, `Cargo.lock`, `local/`, and Python caches.
 
 ## Runtime/Tooling Preferences
@@ -114,3 +114,5 @@ Python scripts generally emit deterministic `word;score` dictionaries and option
 Tests use Rust's built-in harness and live in inline `#[cfg(test)]` modules under `src/`; there is currently no top-level `tests/`, coverage tool, or coverage threshold. Shared fixtures are mostly in-memory templates/word lists, plus `resources/spreadthewordlist.dict`; temporary filesystem cases use `tempfile`.
 
 Use `cargo test --all-features` for the complete existing suite. For behavioral changes, prefer light, relevant evidence: smoke the CLI path, add integration/end-to-end coverage where boundaries matter, and add a regression test for a reproduced bug. Do not pursue line-coverage targets or delete existing tests merely to simplify the suite. Keep tests deterministic and preserve focused cases for normalization, duplicate constraints, abort/timeout behavior, preferred-word optimality, serialization, and telemetry.
+
+The one Python test lives beside its subject: `python3 scripts/test_oracle_client.py` runs the `scripts/oracle.py` contract tests (row framing, pool concurrency) with no `ingrid_core` binary and no third-party test runner.

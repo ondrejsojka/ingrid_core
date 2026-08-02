@@ -193,12 +193,12 @@ fn fully_fixed_grid_has_exactly_one_fill() {
     let mut word_list = word_list(&["cat"], &["dog"]);
     let config = generate_grid_config_from_template_string(&mut word_list, "cat\n", 0)
         .expect("test template is valid");
-    let config_ref = config.to_config_ref(&word_list);
+    let config_ref = config.to_config_ref();
     let prepared = prepare_search(&config_ref).unwrap();
     let result = incumbent(
         vec![Choice {
             slot_id: 0,
-            word_id: word_id(&word_list, "cat"),
+            word_id: word_id(config.word_list, "cat"),
         }],
         1,
     );
@@ -220,12 +220,12 @@ fn impossible_preferred_threshold_has_exactly_zero_fills() {
     let mut word_list = word_list(&["cat"], &["dog"]);
     let config = generate_grid_config_from_template_string(&mut word_list, "...\n", 0)
         .expect("test template is valid");
-    let config_ref = config.to_config_ref(&word_list);
+    let config_ref = config.to_config_ref();
     let prepared = prepare_search(&config_ref).unwrap();
     let result = incumbent(
         vec![Choice {
             slot_id: 0,
-            word_id: word_id(&word_list, "cat"),
+            word_id: word_id(config.word_list, "cat"),
         }],
         2,
     );
@@ -247,17 +247,17 @@ fn disconnected_slots_estimate_duplicate_constrained_count() {
     let mut word_list = word_list(&["cat"], &["dog"]);
     let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
         .expect("test template is valid");
-    let config_ref = config.to_config_ref(&word_list);
+    let config_ref = config.to_config_ref();
     let prepared = prepare_search(&config_ref).unwrap();
     let result = incumbent(
         vec![
             Choice {
                 slot_id: 0,
-                word_id: word_id(&word_list, "cat"),
+                word_id: word_id(config.word_list, "cat"),
             },
             Choice {
                 slot_id: 1,
-                word_id: word_id(&word_list, "dog"),
+                word_id: word_id(config.word_list, "dog"),
             },
         ],
         0,
@@ -274,17 +274,17 @@ fn shared_substring_rejections_never_contribute_as_leaves() {
     let mut word_list = word_list_with_shared_limit(&[], &["stone", "stony", "spear"], Some(3));
     let config = generate_grid_config_from_template_string(&mut word_list, ".....#.....\n", 0)
         .expect("test template is valid");
-    let config_ref = config.to_config_ref(&word_list);
+    let config_ref = config.to_config_ref();
     let prepared = prepare_search(&config_ref).unwrap();
     let result = incumbent(
         vec![
             Choice {
                 slot_id: 0,
-                word_id: word_id(&word_list, "stone"),
+                word_id: word_id(config.word_list, "stone"),
             },
             Choice {
                 slot_id: 1,
-                word_id: word_id(&word_list, "spear"),
+                word_id: word_id(config.word_list, "spear"),
             },
         ],
         0,
@@ -307,17 +307,17 @@ fn fixed_seed_is_reproducible_across_worker_counts() {
     let mut word_list = word_list(&["cat"], &["dog"]);
     let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
         .expect("test template is valid");
-    let config_ref = config.to_config_ref(&word_list);
+    let config_ref = config.to_config_ref();
     let prepared = prepare_search(&config_ref).unwrap();
     let result = incumbent(
         vec![
             Choice {
                 slot_id: 0,
-                word_id: word_id(&word_list, "cat"),
+                word_id: word_id(config.word_list, "cat"),
             },
             Choice {
                 slot_id: 1,
-                word_id: word_id(&word_list, "dog"),
+                word_id: word_id(config.word_list, "dog"),
             },
         ],
         0,
@@ -338,17 +338,17 @@ fn wave_split_cohorts_match_the_single_wave_cohort() {
     let mut word_list = word_list(&["cat"], &["dog"]);
     let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
         .expect("test template is valid");
-    let config_ref = config.to_config_ref(&word_list);
+    let config_ref = config.to_config_ref();
     let prepared = prepare_search(&config_ref).unwrap();
     let result = incumbent(
         vec![
             Choice {
                 slot_id: 0,
-                word_id: word_id(&word_list, "cat"),
+                word_id: word_id(config.word_list, "cat"),
             },
             Choice {
                 slot_id: 1,
-                word_id: word_id(&word_list, "dog"),
+                word_id: word_id(config.word_list, "dog"),
             },
         ],
         0,
@@ -409,25 +409,35 @@ fn canonical_search_evidence_survives_without_sampling() {
     let mut word_list = word_list(&["cat"], &["dog"]);
     let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
         .expect("test template is valid");
-    let config_ref = config.to_config_ref(&word_list);
+    let config_ref = config.to_config_ref();
     let reversed_choices = vec![
         Choice {
             slot_id: 1,
-            word_id: word_id(&word_list, "dog"),
+            word_id: word_id(config.word_list, "dog"),
         },
         Choice {
             slot_id: 0,
-            word_id: word_id(&word_list, "cat"),
+            word_id: word_id(config.word_list, "cat"),
         },
     ];
     let mut result = incumbent(reversed_choices.clone(), 0);
     assert_eq!(
         canonical_fill_key(&config_ref, &reversed_choices),
-        Some(vec![word_id(&word_list, "cat"), word_id(&word_list, "dog")].into_boxed_slice())
+        Some(
+            vec![
+                word_id(config.word_list, "cat"),
+                word_id(config.word_list, "dog")
+            ]
+            .into_boxed_slice()
+        )
     );
-    result
-        .certified_fills
-        .insert(vec![word_id(&word_list, "dog"), word_id(&word_list, "cat")].into_boxed_slice());
+    result.certified_fills.insert(
+        vec![
+            word_id(config.word_list, "dog"),
+            word_id(config.word_list, "cat"),
+        ]
+        .into_boxed_slice(),
+    );
     assert_eq!(result.certified_fills.len(), 2);
     let mut configured = options(16, 4);
     configured.runtime_ratio = 0.0;
@@ -455,16 +465,16 @@ fn capped_certified_evidence_marks_the_estimate_capped() {
     let mut word_list = word_list(&["cat"], &["dog"]);
     let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
         .expect("test template is valid");
-    let config_ref = config.to_config_ref(&word_list);
+    let config_ref = config.to_config_ref();
     let mut result = incumbent(
         vec![
             Choice {
                 slot_id: 0,
-                word_id: word_id(&word_list, "cat"),
+                word_id: word_id(config.word_list, "cat"),
             },
             Choice {
                 slot_id: 1,
-                word_id: word_id(&word_list, "dog"),
+                word_id: word_id(config.word_list, "dog"),
             },
         ],
         0,
@@ -494,9 +504,9 @@ fn canonical_fill_key_rejects_duplicate_or_missing_slots() {
     let mut word_list = word_list(&["cat"], &["dog"]);
     let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
         .expect("test template is valid");
-    let config_ref = config.to_config_ref(&word_list);
-    let cat = word_id(&word_list, "cat");
-    let dog = word_id(&word_list, "dog");
+    let config_ref = config.to_config_ref();
+    let cat = word_id(config.word_list, "cat");
+    let dog = word_id(config.word_list, "dog");
     let shuffled = vec![
         Choice {
             slot_id: 1,
@@ -544,12 +554,12 @@ fn invalid_options_are_reported_without_sampling() {
     let mut word_list = word_list(&["cat"], &["dog"]);
     let config = generate_grid_config_from_template_string(&mut word_list, "...\n", 0)
         .expect("test template is valid");
-    let config_ref = config.to_config_ref(&word_list);
+    let config_ref = config.to_config_ref();
     let prepared = prepare_search(&config_ref).unwrap();
     let result = incumbent(
         vec![Choice {
             slot_id: 0,
-            word_id: word_id(&word_list, "cat"),
+            word_id: word_id(config.word_list, "cat"),
         }],
         1,
     );

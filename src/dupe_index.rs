@@ -47,6 +47,11 @@ pub trait AnyDupeIndex {
 
     /// Undo one `add_word`, restoring the index to the state it had before that call.
     ///
+    /// **Callers MUST remove in exact reverse insertion order.** A group can only be reclaimed
+    /// while it is the most recent one, so removing out of order strands empty groups and their
+    /// substring keys, and a long-lived process leaks them. [`crate::word_list::WordList::rewind`]
+    /// replays its append log backwards for precisely this reason.
+    ///
     /// Only the word's own entries are removed. Explicit dupe pairs naming it from the other side
     /// are not swept, because words that are added and removed again are template-local hidden
     /// entries, which never take part in an `add_dupe_pair`.
@@ -144,10 +149,10 @@ impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
         }
     }
 
-    /// Remove a word previously passed to `add_word`. Groups that become empty are kept for reuse
-    /// unless they are the most recent ones, in which case they are popped along with the
-    /// substring key that names them; that keeps a repeated add/remove cycle from growing the
-    /// index.
+    /// Remove a word previously passed to `add_word`. Given the reverse-insertion-order contract,
+    /// every group this word created is the current tail by the time we reach it, so it is popped
+    /// along with the substring key naming it; a group the word merely joined still has its older
+    /// members and is left alone.
     fn remove_word(&mut self, word_id: WordId, word: &Word) {
         let global_word_id = (word.glyphs.len(), word_id);
         self.extra_dupes_by_word.remove(&global_word_id);

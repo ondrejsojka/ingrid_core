@@ -35,32 +35,44 @@ So every probe brackets its configuration work:
 
 ```rust
 let corpus = word_list.snapshot();
-let owned = generate_grid_config_from_parsed(&mut word_list, &parsed, min_score, order);
-let probe = run_probe(&owned, &word_list, ...);
+let probe = {
+    let owned = generate_grid_config_from_parsed(&mut word_list, &parsed, min_score, order);
+    run_probe(&owned, ...)
+};                                  // the config's borrow of the corpus ends here
 word_list.rewind(&corpus);          // exact, not approximate
 ```
 
-`WordList::rewind` pops the appended words, unmaps their strings, calls the new
-`AnyDupeIndex::remove_word` to take them back out of every substring group they joined (popping
-groups that were created for them), and drops glyphs added for characters the dictionary had never
-seen. It restores appended state only: words hidden by `--blocklist` and other in-place edits are
-campaign state and are left alone.
+`WordList::rewind` replays the appends backwards, unmaps their strings, calls the new
+`AnyDupeIndex::remove_word` to take them out of every substring group they joined, and drops glyphs
+added for characters the dictionary had never seen. It restores appended state only: words hidden
+by `--blocklist` and other in-place edits are campaign state and are left alone.
 
-This is deliberately not a cache, a reload, or a periodic compaction. It is the additions being
-scoped to the template that needed them. Two consequences worth stating:
+Two details are load-bearing rather than incidental:
 
-- `OwnedGridConfig` owns per-template setup and **not** the word list; `to_config_ref` takes the
-  corpus as an argument. That is what lets the oracle hold the corpus by value and lend it per
-  probe, instead of passing ownership in and out.
-- The solver's hot path is untouched. An overlay of template-local words would have put a branch
-  in `word_list.words[length][word_id]`, which is read in the innermost propagation loops.
+- **Reverse insertion order, not bucket order.** The dupe index can only reclaim a substring group
+  while that group is the most recent one, and a grid's fully specified slots are visited in slot
+  order, so their lengths interleave. Walking the length buckets would remove a four-letter pin
+  before a five-letter one appended after it and strand the four-letter pin's group — one leaked
+  group and substring key per probe. `WordList` therefore keeps an `append_log` of the bucket each
+  word went into, `WordListSnapshot` captures its length, and `rewind` pops it from the end.
+  `test_rewind_reclaims_groups_when_lengths_are_appended_out_of_order` fails against a bucket-order
+  implementation and passes against this one.
+- **The borrow checker, not a comment.** `OwnedGridConfig<'a>` borrows the corpus its `WordId`s
+  index into, and `generate_*` takes `&'a mut WordList` and hands back that borrow. Rewinding,
+  mutating, or substituting the corpus while a config is alive is a compile error, not a
+  documented caller obligation. (It used to be the latter, and pairing a live config with a
+  rewound list panicked with an out-of-bounds index inside `util.rs`.)
 
-Measured: 3,000 probes that each pin random non-words into a 15×15 švédská against a
-160,469-entry list. Resident memory rises to its high-water mark within the first 500 probes and
-then does not move at all (173.8 MiB at 500, 1000, 1500, 2000, 2500 and 3000 probes), and the
-baseline template gets a byte-identical answer before and after
-(`unknown slots=61 min_domain=1591`). `oracle::tests::probes_leave_the_corpus_byte_for_byte_unchanged`
-and the `word_list::tests::test_rewind_*` cases pin the same property down exactly rather than
+The solver's hot path is untouched: an overlay of template-local words would have put a branch in
+`word_list.words[length][word_id]`, which is read in the innermost propagation loops.
+
+Measured: 3,500 probes against a 160,469-entry list, each pinning several runs of four to seven
+random non-word letters into a 15×15 švédská in slot order — 11,538 forced entries in all.
+Resident memory reaches its high-water mark within the first 500 probes and then does not move
+(175.6 MiB at 500 through 3,500), and the baseline template gets a byte-identical answer before and
+after (`unknown slots=61 min_domain=1591`).
+`oracle::tests::probes_leave_the_corpus_byte_for_byte_unchanged` and the
+`word_list::tests::test_rewind_*` cases pin the same property down exactly rather than
 statistically.
 
 ## One template parser
@@ -73,6 +85,11 @@ It rejects rather than reshapes. Surrounding blank lines and per-row surrounding
 cosmetic, but an *interior* blank row is an error: in a framed request (rows joined by `/`)
 `.....//.....` is a genuinely malformed grid, and quietly dropping the empty row would return a
 confident verdict about a different, smaller template.
+
+`scripts/oracle.py` mirrors that rule rather than pre-empting it: `_as_rows` drops surrounding
+blank rows and keeps interior ones, so a malformed grid reaches the engine and comes back as
+`error row 1 is empty` instead of being quietly reshaped client-side. It also refuses a row
+containing `/` or whitespace, which would reframe the request on the wire.
 
 ## Two surfaces
 
@@ -175,16 +192,22 @@ thread, the banner read has a timeout, and a child that never becomes ready is k
 `pool.probe_many(items, stop_on=...)` yields `(key, verdict)` as answers arrive. Its contract is
 precise, because the protocol cannot abandon a probe already running:
 
-- At most `jobs` probes are in flight. Workers take work against a credit the generator issues as
-  it consumes answers, so **no probe is started after the match is observed** — there is no window
-  in which a worker races ahead of the decision.
+- At most `jobs` probes are in flight, because a worker may only take the next item against a
+  credit the generator issues per answer consumed.
+- **No probe is started once the match has been observed.** The generator evaluates `stop_on` and
+  records the stop *before* it releases a credit and before it yields; a worker's item handout and
+  the stop flag are decided under the same lock. Releasing the credit first, or deciding only
+  after the caller resumes the generator, both leave a window in which a worker picks up more work
+  while the answer is already known — the first version of this did exactly that.
 - On a match the generator drains the at most `jobs - 1` probes still running, discards their
   answers, and returns. Its runtime after a match is one probe, not the remaining work. Nothing
   here is described as cancellation, because none of it is.
 
-Measured with a fake pool: 10 items of 100 ms behind a 50 ms match, `jobs=2` — 2 probes started,
-101 ms elapsed. The degenerate case of one 50 ms match beside one 500 ms sibling still takes
-501 ms; both were already running, and that is the floor, not a bug.
+`scripts/test_oracle_client.py` holds all of this down against a fake pool with no binary
+involved: 10 items of 100 ms behind a 50 ms match at `jobs=2` starts 2 probes and takes 101 ms,
+and a caller that sleeps 150 ms inside the loop after the match still starts nothing new. The
+degenerate case of one 50 ms match beside one 500 ms sibling still takes 501 ms; both were already
+running, and that is the floor, not a bug.
 
 Run the client directly to probe grid files: `python3 scripts/oracle.py grid.txt --wordlist
 std.dict --probe-ms 500 --fill`. Exit status 1 means at least one grid was proven unfillable, 2

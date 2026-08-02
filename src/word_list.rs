@@ -406,11 +406,13 @@ type OnUpdateCallback = Box<dyn FnMut(&mut WordList, &[GlobalWordId]) + Send + S
 pub type SyncErrors = HashMap<String, io::Error>;
 
 /// The size of a `WordList` at a point in time, taken by [`WordList::snapshot`] and consumed by
-/// [`WordList::rewind`] to drop everything added since.
-#[derive(Debug, Clone)]
+/// [`WordList::rewind`] to drop everything added since. Snapshots nest, as long as they are
+/// rewound in reverse order.
+#[derive(Debug, Clone, Copy)]
 pub struct WordListSnapshot {
-    word_counts_by_length: Vec<usize>,
-    glyph_count: usize,
+    appended_words: usize,
+    bucket_count: usize,
+    glyphs: usize,
 }
 
 /// A struct representing the currently-loaded word list(s). This contains information that is
@@ -430,6 +432,11 @@ pub struct WordList {
     /// A list of all loaded words, bucketed by length. An index into `words` is the length of the
     /// words in the bucket, so `words[0]` is always an empty vec.
     pub words: Vec<Vec<Word>>,
+
+    /// The length bucket each word was appended to, in append order. Per-bucket ids are handed out
+    /// sequentially, so this is enough to replay the appends backwards, which is what
+    /// [`WordList::rewind`] needs and what the dupe index requires to reclaim its groups.
+    append_log: Vec<usize>,
 
     /// A map from a normalized string to the id of the Word representing it.
     pub word_id_by_string: HashMap<String, WordId>,
@@ -482,6 +489,7 @@ impl WordList {
             glyphs: vec![],
             glyph_id_by_char: HashMap::new(),
             words: vec![vec![]],
+            append_log: vec![],
             word_id_by_string: HashMap::new(),
             dupe_index: WordList::instantiate_dupe_index(max_shared_substring),
             exempt_preferred_dupes: false,
@@ -547,8 +555,9 @@ impl WordList {
     #[must_use]
     pub fn snapshot(&self) -> WordListSnapshot {
         WordListSnapshot {
-            word_counts_by_length: self.words.iter().map(Vec::len).collect(),
-            glyph_count: self.glyphs.len(),
+            appended_words: self.append_log.len(),
+            bucket_count: self.words.len(),
+            glyphs: self.glyphs.len(),
         }
     }
 
@@ -561,30 +570,31 @@ impl WordList {
     /// entries in `words`, `word_id_by_string` and the dupe index, and later grids see a
     /// dictionary that depends on which grids came before.
     ///
+    /// Words are removed in exact reverse insertion order, which is what `append_log` is for.
+    /// Walking the length buckets instead would remove them in an order the dupe index cannot
+    /// unwind: it can only reclaim a substring group while that group is the most recent one, and
+    /// insertion order is slot order, not length order.
+    ///
     /// Only entries appended after the snapshot are affected; words hidden by `hide_words` or
     /// edited in place are not restored, and ids handed out before the snapshot stay valid.
     pub fn rewind(&mut self, snapshot: &WordListSnapshot) {
-        for length in 0..self.words.len() {
-            let keep = snapshot
-                .word_counts_by_length
-                .get(length)
-                .copied()
-                .unwrap_or(0);
-            while self.words[length].len() > keep {
-                let word = self.words[length]
-                    .pop()
-                    .expect("bucket length was just checked");
-                let word_id = self.words[length].len();
-                if self.word_id_by_string.get(&word.normalized_string) == Some(&word_id) {
-                    self.word_id_by_string.remove(&word.normalized_string);
-                }
-                self.dupe_index.remove_word(word_id, &word);
+        while self.append_log.len() > snapshot.appended_words {
+            let length = self
+                .append_log
+                .pop()
+                .expect("log length was just checked against the snapshot");
+            let word = self.words[length]
+                .pop()
+                .expect("every logged append left a word in its bucket");
+            let word_id = self.words[length].len();
+            if self.word_id_by_string.get(&word.normalized_string) == Some(&word_id) {
+                self.word_id_by_string.remove(&word.normalized_string);
             }
+            self.dupe_index.remove_word(word_id, &word);
         }
-        self.words
-            .truncate(snapshot.word_counts_by_length.len().max(1));
+        self.words.truncate(snapshot.bucket_count.max(1));
 
-        for glyph in self.glyphs.split_off(snapshot.glyph_count) {
+        for glyph in self.glyphs.split_off(snapshot.glyphs) {
             self.glyph_id_by_char.remove(&glyph);
         }
     }
@@ -685,6 +695,7 @@ impl WordList {
                 None
             },
         });
+        self.append_log.push(word_length);
 
         self.word_id_by_string
             .insert(raw_entry.normalized.clone(), word_id);
@@ -1698,10 +1709,7 @@ pub mod tests {
             id: id.into(),
             enabled: true,
             provider: WordListSourceConfigProvider::Memory {
-                words: words
-                    .iter()
-                    .map(|word| (word.to_string(), 50))
-                    .collect(),
+                words: words.iter().map(|word| (word.to_string(), 50)).collect(),
             },
             normalization: None,
         };
@@ -2592,6 +2600,76 @@ pub mod tests {
                 before,
                 "an add/rewind cycle left residue behind"
             );
+        }
+    }
+
+    /// Regression: rewind must replay appends in exact reverse insertion order, not bucket order.
+    ///
+    /// The dupe index can only reclaim a substring group while that group is the most recent one,
+    /// and insertion order is slot order, not length order. Walking the length buckets ascending
+    /// removes `wxyz` before `klmno`, at which point `wxyz`'s group is buried under `klmno`'s and
+    /// is stranded forever — one leaked group and substring key per probe, which for a service
+    /// answering millions of questions is exactly the growth `rewind` exists to prevent.
+    #[test]
+    fn test_rewind_reclaims_groups_when_lengths_are_appended_out_of_order() {
+        for order in [["wxyz", "klmno"], ["klmno", "wxyz"]] {
+            let mut word_list = WordList::new(
+                vec![WordListSourceConfig {
+                    id: "0".into(),
+                    enabled: true,
+                    provider: WordListSourceConfigProvider::Memory {
+                        words: vec![("abcde".into(), 50), ("abcd".into(), 50)],
+                    },
+                    normalization: None,
+                }],
+                None,
+                Some(5),
+                Some(3),
+            );
+            let before = fingerprint(&word_list);
+            let snapshot = word_list.snapshot();
+            for word in order {
+                word_list.get_word_id_or_add_hidden(word);
+            }
+            assert_ne!(fingerprint(&word_list), before, "{order:?} added nothing");
+            word_list.rewind(&snapshot);
+            assert_eq!(
+                fingerprint(&word_list),
+                before,
+                "appending {order:?} and rewinding stranded index state"
+            );
+        }
+    }
+
+    /// The same property with many interleaved lengths and repeats, which is what a real probe
+    /// stream looks like: a grid's fully specified slots are visited in slot order.
+    #[test]
+    fn test_rewind_reclaims_groups_across_interleaved_lengths() {
+        let mut word_list = WordList::new(
+            vec![WordListSourceConfig {
+                id: "0".into(),
+                enabled: true,
+                provider: WordListSourceConfigProvider::Memory {
+                    words: vec![
+                        ("abcde".into(), 50),
+                        ("abcd".into(), 50),
+                        ("abc".into(), 50),
+                    ],
+                },
+                normalization: None,
+            }],
+            None,
+            Some(5),
+            Some(3),
+        );
+        let before = fingerprint(&word_list);
+        for round in 0..4 {
+            let snapshot = word_list.snapshot();
+            for word in ["wxyz", "klmno", "abcz", "vwxyz", "wxyz", "qrst"] {
+                word_list.get_word_id_or_add_hidden(word);
+            }
+            word_list.rewind(&snapshot);
+            assert_eq!(fingerprint(&word_list), before, "round {round}");
         }
     }
 
