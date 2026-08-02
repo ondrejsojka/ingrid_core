@@ -10,34 +10,15 @@ from __future__ import annotations
 import argparse
 import sys
 
+from pin_long import cells_of, slots
+
 
 def runs(rows):
     """(direction, r, c, text) for every maximal run of >= 2 non-block cells."""
-    h, w = len(rows), len(rows[0])
-    out = []
-    for r in range(h):
-        c = 0
-        while c < w:
-            if rows[r][c] != "#":
-                c0 = c
-                while c < w and rows[r][c] != "#":
-                    c += 1
-                if c - c0 >= 2:
-                    out.append(("A", r, c0, rows[r][c0:c]))
-            else:
-                c += 1
-    for c in range(w):
-        r = 0
-        while r < h:
-            if rows[r][c] != "#":
-                r0 = r
-                while r < h and rows[r][c] != "#":
-                    r += 1
-                if r - r0 >= 2:
-                    out.append(("D", r0, c, "".join(rows[i][c] for i in range(r0, r))))
-            else:
-                r += 1
-    return out
+    return [
+        (slot[0], slot[1], slot[2], "".join(rows[r][c] for r, c in cells_of(slot)))
+        for slot in slots(rows, min_run=2)
+    ]
 
 
 def check(rows, dict_words=None, allow_unclued=()):

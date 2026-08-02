@@ -195,12 +195,14 @@ impl Oracle {
     }
 
     /// The campaign corpus, exactly as it was when the oracle was constructed.
+    #[cfg(test)]
     #[must_use]
     pub fn word_list(&self) -> &WordList {
         &self.word_list
     }
 
     /// Number of probes answered so far.
+    #[cfg(test)]
     #[must_use]
     pub fn probe_count(&self) -> u64 {
         self.probe_count
@@ -225,6 +227,7 @@ impl Oracle {
     }
 
     /// Probe a template using the campaign's default budget.
+    #[cfg(test)]
     pub fn probe(&mut self, template: &str) -> Result<Probe, ProbeError> {
         self.probe_with(template, &ProbeOptions::default())
     }

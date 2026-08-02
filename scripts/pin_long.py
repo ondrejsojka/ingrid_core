@@ -24,6 +24,7 @@ pins compose instead of being scored independently.
 from __future__ import annotations
 
 import argparse
+import collections
 import sys
 from pathlib import Path
 
@@ -33,7 +34,11 @@ from oracle import OraclePool, add_oracle_arguments, oracle_kwargs  # noqa: E402
 
 
 def read_grid(path):
-    return [list(l.rstrip("\n")) for l in open(path, encoding="utf-8") if l.strip()]
+    rows = [line.rstrip("\n") for line in open(path, encoding="utf-8") if line.strip()]
+    width = max(len(r) for r in rows)
+    if any(len(r) != width for r in rows):
+        sys.exit(f"{path}: ragged grid")
+    return [list(r) for r in rows]
 
 
 def dump(grid):
@@ -71,6 +76,22 @@ def slots(grid, min_run=3):
 def cells_of(slot):
     d, r, c, n = slot
     return [(r, c + i) if d == "A" else (r + i, c) for i in range(n)]
+
+
+def load_by_length(paths, min_score):
+    words = set()
+    for path in paths:
+        for line in open(path, encoding="utf-8"):
+            line = line.strip()
+            if not line:
+                continue
+            word, _, score = line.partition(";")
+            if int(score or 50) >= min_score:
+                words.add(word)
+    by_length = collections.defaultdict(list)
+    for word in words:
+        by_length[len(word)].append(word)
+    return by_length
 
 
 def trials_for(grid, theme, placed, min_len):

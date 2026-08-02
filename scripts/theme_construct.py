@@ -20,69 +20,13 @@ how unmistakably the word reads as theme), break ties by longer word, then by fa
 """
 
 import argparse
-import collections
 import concurrent.futures
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-
-def read_grid(path):
-    return [list(line.rstrip("\n")) for line in open(path, encoding="utf-8") if line.strip()]
-
-
-def dump(grid):
-    return "\n".join("".join(row) for row in grid) + "\n"
-
-
-def slots(grid, min_run=3):
-    height, width = len(grid), len(grid[0])
-    out = []
-    for r in range(height):
-        c = 0
-        while c < width:
-            if grid[r][c] == "#":
-                c += 1
-                continue
-            start = c
-            while c < width and grid[r][c] != "#":
-                c += 1
-            if c - start >= min_run:
-                out.append(("A", r, start, c - start))
-    for c in range(width):
-        r = 0
-        while r < height:
-            if grid[r][c] == "#":
-                r += 1
-                continue
-            start = r
-            while r < height and grid[r][c] != "#":
-                r += 1
-            if r - start >= min_run:
-                out.append(("D", start, c, r - start))
-    return out
-
-
-def cells_of(slot):
-    direction, r, c, length = slot
-    return [(r, c + i) if direction == "A" else (r + i, c) for i in range(length)]
-
-
-def load_by_length(paths, min_score):
-    words = set()
-    for path in paths:
-        for line in open(path, encoding="utf-8"):
-            line = line.strip()
-            if not line:
-                continue
-            word, _, score = line.partition(";")
-            if int(score or 50) >= min_score:
-                words.add(word)
-    by_length = collections.defaultdict(list)
-    for word in words:
-        by_length[len(word)].append(word)
-    return by_length
+from pin_long import cells_of, dump, load_by_length, read_grid, slots
 
 
 def unary_ok(grid, by_length):

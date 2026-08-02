@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Render a crossword fill plus clue set as an HTML email and send it with Resend.
 
-See SKILL.md next to this file. The Resend key is send-only, the sender must be
-onboarding@resend.dev unless a domain is verified, and the request must go through
-curl -- urllib gets a Cloudflare 403 (error code 1010).
+See SKILL.md next to this file. The transport is scripts/send_mail.py: on the
+Resend side the key in ~/.env is send-only, and the sender must be
+onboarding@resend.dev unless a domain is verified.
 """
 
 import argparse
-import json
-import os
 import statistics
-import subprocess
 import sys
-import tempfile
 from collections import Counter
+from pathlib import Path
+
+# Shared mail transport lives with the other repo scripts; .omp/skills/crossword-email
+# is three levels below the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
+from send_mail import send
+
 
 CSS = """
 body{margin:0;background:#f7f4ee;color:#202020;font:16px/1.55 system-ui,-apple-system,sans-serif}
@@ -102,9 +105,10 @@ def read_clues(path):
 
 
 def check(entries, clues):
-    """Returns (live answers, warnings). Mirrors the CLUES.md checker."""
+    """Returns (live answers, warnings). Mirrors the CLUES.md checker.
+    Entries may be (n, word) or (r, c, word); the word is the last item."""
     live, warn = [], []
-    for _, word in entries:
+    for *_, word in entries:
         entry = clues.get(word)
         if not entry or entry[0] in ("", "-"):
             warn.append(f"no clue: {word}")
@@ -242,10 +246,10 @@ def render(rows, nums, across, down, clues, title, headline, intro, tajenka=()):
 </main></body></html>"""
 
 
-def render_swedish(rows, clues, title, headline, intro, tajenka=()):
+def swedish_slots(rows):
+    """Across and down slots of length >= 3, as (row, col, word). Rows are scanned
+    top-to-bottom; across runs left-to-right, down runs row-major by start cell."""
     h, w = len(rows), len(rows[0])
-
-    # Derive across slots >= 3
     across_slots = []
     for r in range(h):
         c = 0
@@ -260,7 +264,6 @@ def render_swedish(rows, clues, title, headline, intro, tajenka=()):
             else:
                 c += 1
 
-    # Derive down slots >= 3 (ordered top-to-bottom, left-to-right)
     down_slots = []
     for r in range(h):
         for c in range(w):
@@ -271,6 +274,12 @@ def render_swedish(rows, clues, title, headline, intro, tajenka=()):
                 word = "".join(rows[rr][c] for rr in range(r, end_r))
                 if len(word) >= 3:
                     down_slots.append((r, c, word))
+    return across_slots, down_slots
+
+
+def render_swedish(rows, clues, title, headline, intro, tajenka=()):
+    h, w = len(rows), len(rows[0])
+    across_slots, down_slots = swedish_slots(rows)
 
     # Resolve legend cells
     legend_map = {}  # (r, c) -> {'across': word, 'down': word}
@@ -436,40 +445,6 @@ table.d th{background:#efeade;font-weight:600}
 {stats}
 </main></body></html>"""
 
-def send(subject, html, to, sender, key):
-    payload = {
-        "from": sender,
-        "to": to,
-        "subject": subject,
-        "html": html,
-        "text": "Tento e-mail je v HTML: mřížka, legendy, řešení a klíč.",
-    }
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
-        json.dump(payload, fh)
-        path = fh.name
-    try:
-        # curl, not urllib: api.resend.com answers urllib with 403 error code 1010.
-        proc = subprocess.run(
-            ["curl", "-s", "-w", "\n%{http_code}", "-X", "POST", "https://api.resend.com/emails",
-             "-H", f"Authorization: Bearer {key}", "-H", "Content-Type: application/json",
-             "--data-binary", f"@{path}"],
-            capture_output=True, text=True, check=True,
-        )
-    finally:
-        os.unlink(path)
-    body, _, status = proc.stdout.rpartition("\n")
-    if status.strip() != "200":
-        sys.exit(f"resend failed: HTTP {status.strip()} {body}")
-    return json.loads(body)
-
-
-def load_key(env_path):
-    for ln in open(os.path.expanduser(env_path), encoding="utf-8"):
-        if ln.startswith("RESEND_API_KEY"):
-            return ln.split("=", 1)[1].strip()
-    sys.exit(f"RESEND_API_KEY not found in {env_path}")
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--fill", required=True, help="grid file, # for blocks")
@@ -514,31 +489,7 @@ def main():
         html = render(rows, nums, across, down, clues, args.subject,
                       args.headline or args.subject, intro, tajenka)
     else:
-        # derive slots for warning checks
-        h, w = len(rows), len(rows[0])
-        across_slots, down_slots = [], []
-        for r in range(h):
-            c = 0
-            while c < w:
-                if rows[r][c] != "#":
-                    start_c = c
-                    while c < w and rows[r][c] != "#":
-                        c += 1
-                    word = "".join(rows[r][start_c:c])
-                    if len(word) >= 3:
-                        across_slots.append((0, word))
-                else:
-                    c += 1
-        for r in range(h):
-            for c in range(w):
-                if rows[r][c] != "#" and (r == 0 or rows[r - 1][c] == "#"):
-                    end_r = r
-                    while end_r < h and rows[end_r][c] != "#":
-                        end_r += 1
-                    word = "".join(rows[rr][c] for rr in range(r, end_r))
-                    if len(word) >= 3:
-                        down_slots.append((0, word))
-
+        across_slots, down_slots = swedish_slots(rows)
         _, warnings = check(across_slots + down_slots, clues)
         for w in warnings:
             print(f"warn: {w}", file=sys.stderr)
@@ -560,7 +511,16 @@ def main():
         return
     if not args.to:
         sys.exit("--to is required unless --dry-run")
-    print(send(args.subject, html, args.to, args.from_address, load_key(args.env)))
+    send(
+        {
+            "from": args.from_address,
+            "to": args.to,
+            "subject": args.subject,
+            "html": html,
+            "text": "Tento e-mail je v HTML: mřížka, legendy, řešení a klíč.",
+        },
+        args.env,
+    )
 
 
 if __name__ == "__main__":

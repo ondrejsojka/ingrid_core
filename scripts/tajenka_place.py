@@ -16,67 +16,10 @@ initial arc consistency for a unary reason.
 """
 
 import argparse
-import collections
 import itertools
-import sys
 from pathlib import Path
 
-
-def read_grid(path):
-    rows = [line.rstrip("\n") for line in open(path, encoding="utf-8") if line.strip()]
-    width = max(len(r) for r in rows)
-    if any(len(r) != width for r in rows):
-        sys.exit(f"{path}: ragged grid")
-    return [list(r) for r in rows]
-
-
-def slots(grid, min_run=3):
-    height, width = len(grid), len(grid[0])
-    out = []
-    for r in range(height):
-        c = 0
-        while c < width:
-            if grid[r][c] == "#":
-                c += 1
-                continue
-            start = c
-            while c < width and grid[r][c] != "#":
-                c += 1
-            if c - start >= min_run:
-                out.append(("A", r, start, c - start))
-    for c in range(width):
-        r = 0
-        while r < height:
-            if grid[r][c] == "#":
-                r += 1
-                continue
-            start = r
-            while r < height and grid[r][c] != "#":
-                r += 1
-            if r - start >= min_run:
-                out.append(("D", start, c, r - start))
-    return out
-
-
-def cells_of(slot):
-    direction, r, c, length = slot
-    return [(r, c + i) if direction == "A" else (r + i, c) for i in range(length)]
-
-
-def load_words(paths, min_score):
-    words = set()
-    for path in paths:
-        for line in open(path, encoding="utf-8"):
-            line = line.strip()
-            if not line:
-                continue
-            word, _, score = line.partition(";")
-            if int(score or 50) >= min_score:
-                words.add(word)
-    by_length = collections.defaultdict(list)
-    for word in words:
-        by_length[len(word)].append(word)
-    return by_length
+from pin_long import cells_of, load_by_length, read_grid, slots
 
 
 def screen(grid, placement, words, by_length, min_domain):
@@ -117,7 +60,7 @@ def main():
     parser.add_argument("--max-per-grid", type=int, default=3)
     args = parser.parse_args()
 
-    by_length = load_words(args.wordlist, args.min_score)
+    by_length = load_by_length(args.wordlist, args.min_score)
     words = args.word
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)

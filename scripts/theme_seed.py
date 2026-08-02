@@ -38,6 +38,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from fill_margin import DEFAULT_KAPPA_STAR, Grid, arc_consistency, load_words, measure
+from pin_long import cells_of, slots
 
 
 def normalize_word(word: str) -> str:
@@ -65,29 +66,9 @@ class Placement:
         self.rows = rows
         self.height = len(rows)
         self.width = len(rows[0])
-        self.slots: list[list[tuple[int, int]]] = []
-        self.direction: list[str] = []
-        blocked = lambda r, c: rows[r][c] == "#"  # noqa: E731
-        for r in range(self.height):
-            run: list[tuple[int, int]] = []
-            for c in range(self.width + 1):
-                if c == self.width or blocked(r, c):
-                    if len(run) > 1:
-                        self.slots.append(run)
-                        self.direction.append("A")
-                    run = []
-                else:
-                    run.append((r, c))
-        for c in range(self.width):
-            run = []
-            for r in range(self.height + 1):
-                if r == self.height or blocked(r, c):
-                    if len(run) > 1:
-                        self.slots.append(run)
-                        self.direction.append("D")
-                    run = []
-                else:
-                    run.append((r, c))
+        slot_tuples = slots(rows, min_run=2)
+        self.slots: list[list[tuple[int, int]]] = [cells_of(s) for s in slot_tuples]
+        self.direction: list[str] = [s[0] for s in slot_tuples]
         self.cell_slots: dict[tuple[int, int], list[int]] = defaultdict(list)
         for index, slot in enumerate(self.slots):
             for cell in slot:

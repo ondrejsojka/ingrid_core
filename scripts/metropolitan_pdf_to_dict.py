@@ -11,9 +11,10 @@ Examples:
   # Download every released edition for one year; write whole-year combined dict
   python3 scripts/metropolitan_pdf_to_dict.py --fetch-year 2024 --outdir local/metropolitan
 
-  # Years 2020-2025 whole-year dicts + multi-year combine through 2026-7-8
+  # Fetch years 2020-2026: per-edition dicts for the current year,
+  # whole-year combined dicts for every year
   python3 scripts/metropolitan_pdf_to_dict.py --fetch-years 2020-2026 \
-      --outdir local/metropolitan --combined-range 2020-2026
+      --outdir local/metropolitan
 """
 
 from __future__ import annotations
@@ -22,7 +23,6 @@ import argparse
 import re
 import sys
 import tempfile
-import unicodedata
 from collections import Counter
 from collections.abc import Iterable
 from html import unescape
@@ -39,25 +39,10 @@ MIN_LEN = 2
 MAX_LEN = 40
 
 
-def strip_diacritics(text: str) -> str:
-    return "".join(
-        ch
-        for ch in unicodedata.normalize("NFD", text)
-        if unicodedata.category(ch) != "Mn"
-    )
-
-
-def normalize_token(token: str, *, ascii_only: bool) -> str:
-    word = token.casefold()
-    if ascii_only:
-        word = strip_diacritics(word)
-    return word
-
-
-def extract_counts(text: str, *, ascii_only: bool) -> Counter[str]:
+def extract_counts(text: str) -> Counter[str]:
     counts: Counter[str] = Counter()
     for token in WORD_RE.findall(text):
-        word = normalize_token(token, ascii_only=ascii_only)
+        word = token.casefold()
         if MIN_LEN <= len(word) <= MAX_LEN:
             counts[word] += 1
     return counts
@@ -224,12 +209,6 @@ def score_pdf_candidate(url: str, year: int, issue_id: str) -> int:
     month0 = int(issue_id.split("-")[0])
     if re.search(rf"(?:bm|mb)_{y2}{month0:02d}\.pdf$", name):
         score += 100
-    if "-" in issue_id:
-        # combined issues rarely use BM_/MB_ form; still boost year match below
-        pass
-    # reject obvious wrong-year chrome PDF unless this really is that issue
-    if "metropolitan_2026-7-8" in name and not (year == 2026 and issue_id == "7-8"):
-        score -= 1000
     if str(year) in name or y2 in name:
         score += 5
     return score
@@ -274,14 +253,13 @@ def edition_stub_from_pdf_name(name: str) -> str | None:
 def process_pdf(
     pdf_path: Path,
     *,
-    ascii_only: bool,
     keep_txt_dir: Path | None,
 ) -> Counter[str]:
     text = pdf_to_text(pdf_path)
     if keep_txt_dir is not None:
         keep_txt_dir.mkdir(parents=True, exist_ok=True)
         (keep_txt_dir / (pdf_path.stem + ".txt")).write_text(text, encoding="utf-8")
-    return extract_counts(text, ascii_only=ascii_only)
+    return extract_counts(text)
 
 
 def merge_counters(counters: Iterable[Counter[str]]) -> Counter[str]:
@@ -314,7 +292,6 @@ def fetch_year(
     year: int,
     outdir: Path,
     *,
-    ascii_only: bool,
     keep_sources: bool,
     per_edition: bool,
 ) -> Counter[str]:
@@ -333,7 +310,7 @@ def fetch_year(
         else:
             print(f"  reusing cached {pdf_path}", file=sys.stderr)
 
-        counts = process_pdf(pdf_path, ascii_only=ascii_only, keep_txt_dir=txt_dir)
+        counts = process_pdf(pdf_path, keep_txt_dir=txt_dir)
         stub = edition_stub_from_pdf_name(pdf_path.name) or f"{year}-{issue_id}"
         if per_edition:
             out_path = outdir / f"bm_{stub}.dict"
@@ -356,7 +333,7 @@ def fetch_year(
         f"Brněnský metropolitan {year} — {'per-edition and ' if per_edition else ''}combined dictionary",
         "Extraction: alphabetic tokens length 2–40 from full issue PDF text",
         "Score: raw token frequency",
-        f"ASCII folding: {ascii_only}",
+        "ASCII folding: False",
         f"Editions discovered: {len(per_edition_counts)}",
         "",
         "Editions:",
@@ -367,61 +344,6 @@ def fetch_year(
     source_lines.append(f"  bm_{year}_combined.dict  ({len(combined)} words)")
     source_path.write_text("\n".join(source_lines) + "\n", encoding="utf-8")
     return combined
-
-
-def write_combined_range(outdir: Path, years: list[int], ascii_only: bool) -> Path:
-    if not years:
-        raise SystemExit("Combined range must contain at least one year")
-    counters: list[Counter[str]] = []
-    used_files: list[str] = []
-    for year in years:
-        path = outdir / f"bm_{year}_combined.dict"
-        if not path.is_file():
-            raise SystemExit(f"Missing whole-year dict for combine: {path}")
-        counts: Counter[str] = Counter()
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or ";" not in line:
-                continue
-            word, score_s = line.rsplit(";", 1)
-            word = normalize_token(word, ascii_only=ascii_only)
-            if not word:
-                continue
-            counts[word] += int(score_s)
-        counters.append(counts)
-        used_files.append(path.name)
-
-    combined = merge_counters(counters)
-    contiguous = years == list(range(years[0], years[-1] + 1))
-    if len(years) == 1:
-        label = str(years[0])
-    elif contiguous:
-        label = f"{years[0]}-{years[-1]}"
-    else:
-        label = "_".join(str(year) for year in years)
-    out_path = outdir / f"bm_{label}.dict"
-    n = write_dict(out_path, combined)
-    source_path = outdir / f"SOURCE_{label}.txt"
-    source_path.write_text(
-        "\n".join(
-            [
-                f"Brněnský metropolitan combined {label}",
-                "Score: summed raw token frequencies across whole-year dicts",
-                f"ASCII folding: {ascii_only}",
-                "",
-                "Sources:",
-                *[f"  {name}" for name in used_files],
-                f"  -> {out_path.name} ({n} words, {sum(combined.values())} tokens)",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    print(
-        f"wrote {out_path} ({n} words, {sum(combined.values())} tokens from years {label})",
-        file=sys.stderr,
-    )
-    return out_path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -454,21 +376,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Same as --fetch-year for multiple years, e.g. 2020-2025 or 2020,2022,2026",
     )
     parser.add_argument(
-        "--combined-range",
-        type=str,
-        help="After fetching/loading whole-year dicts, also write bm_<range>.dict (e.g. 2020-2026)",
-    )
-    parser.add_argument(
-        "--per-edition",
-        action="store_true",
-        help="Also write one .dict per edition (default: whole-year combined only)",
-    )
-    parser.add_argument(
-        "--ascii",
-        action="store_true",
-        help="Strip diacritics (typical Czech křížovka alphabet)",
-    )
-    parser.add_argument(
         "--keep-txt",
         action="store_true",
         help="Also write extracted pdftotext output under outdir/txt",
@@ -493,26 +400,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if years:
         for year in years:
-            # Keep per-edition outputs for 2026 by default if already useful; elsewhere whole-year only
-            # unless explicitly requested.
-            per_edition = args.per_edition or year == 2026
+            # Per-edition outputs for the current year; whole-year combined only elsewhere.
             fetch_year(
                 year,
                 args.outdir,
-                ascii_only=args.ascii,
                 keep_sources=args.keep_txt,
-                per_edition=per_edition,
+                per_edition=year == 2026,
             )
-        if args.combined_range:
-            write_combined_range(args.outdir, parse_year_list(args.combined_range), ascii_only=args.ascii)
-        return 0
-
-    if args.combined_range:
-        write_combined_range(args.outdir, parse_year_list(args.combined_range), ascii_only=args.ascii)
         return 0
 
     if not args.inputs:
-        raise SystemExit("Provide PDF path(s)/URL(s), or use --fetch-year(s) / --combined-range")
+        raise SystemExit("Provide PDF path(s)/URL(s), or use --fetch-year(s)")
 
     with tempfile.TemporaryDirectory(prefix="metro-pdf-") as tmp:
         tmp_dir = Path(tmp)
@@ -539,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
 
         counters: list[Counter[str]] = []
         for pdf_path in pdf_paths:
-            counts = process_pdf(pdf_path, ascii_only=args.ascii, keep_txt_dir=keep_txt_dir)
+            counts = process_pdf(pdf_path, keep_txt_dir=keep_txt_dir)
             counters.append(counts)
             if args.per_input or len(pdf_paths) > 1:
                 stub = edition_stub_from_pdf_name(pdf_path.name) or pdf_path.stem

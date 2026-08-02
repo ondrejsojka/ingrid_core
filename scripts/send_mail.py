@@ -30,6 +30,30 @@ def load_key(env_path="~/.env"):
     sys.exit(f"RESEND_API_KEY not found in {env_path}")
 
 
+def send(payload, env_path="~/.env"):
+    """POST any Resend payload dict untouched; prints the response body,
+    sys.exit on a non-200. The payload goes through a temp file, because
+    100 kB of Czech HTML in argv gets mangled."""
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
+        json.dump(payload, fh)
+        path = fh.name
+    try:
+        proc = subprocess.run(
+            ["curl", "-s", "-w", "\n%{http_code}", "-X", "POST",
+             "https://api.resend.com/emails",
+             "-H", f"Authorization: Bearer {load_key(env_path)}",
+             "-H", "Content-Type: application/json",
+             "--data-binary", f"@{path}"],
+            capture_output=True, text=True, check=True,
+        )
+    finally:
+        os.unlink(path)
+    body, _, status = proc.stdout.rpartition("\n")
+    if status.strip() != "200":
+        sys.exit(f"resend failed: HTTP {status.strip()} {body}")
+    print(body)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--html", required=True, help="HTML document to send as the body")
@@ -67,25 +91,7 @@ def main():
         sys.exit("payload over Resend's 40 MB limit")
     if args.dry_run:
         return
-
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
-        json.dump(payload, fh)
-        path = fh.name
-    try:
-        proc = subprocess.run(
-            ["curl", "-s", "-w", "\n%{http_code}", "-X", "POST",
-             "https://api.resend.com/emails",
-             "-H", f"Authorization: Bearer {load_key(args.env)}",
-             "-H", "Content-Type: application/json",
-             "--data-binary", f"@{path}"],
-            capture_output=True, text=True, check=True,
-        )
-    finally:
-        os.unlink(path)
-    body, _, status = proc.stdout.rpartition("\n")
-    if status.strip() != "200":
-        sys.exit(f"resend failed: HTTP {status.strip()} {body}")
-    print(body)
+    send(payload, args.env)
 
 
 if __name__ == "__main__":

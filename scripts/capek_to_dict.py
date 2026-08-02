@@ -46,12 +46,9 @@ def load_denylist(path: Path | None) -> set[str]:
 
 def first_field(line: str) -> str:
     """Read a form from KonText TXT or a simple delimited frequency export."""
-    line = line.strip()
-    if "\t" in line:
-        return line.split("\t", 1)[0]
-    if ";" in line:
-        return line.split(";", 1)[0]
-    return line.split(maxsplit=1)[0] if line else ""
+    # A tab is whitespace, so split(maxsplit=1) covers the tab and whitespace
+    # exports; partition handles the semicolon-delimited one.
+    return line.split(maxsplit=1)[0].partition(";")[0] if line.strip() else ""
 
 
 def build_words(

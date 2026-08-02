@@ -5,30 +5,20 @@ A plain annealer over block patterns cannot reach a length-11 slot: from an
 11-free start there is no downhill path that grows a first 11-run, because every
 intermediate state pays the run-length penalty. This script sidesteps that by
 *planting* the long runs first and freezing their rows, then annealing only the
-remaining symmetry orbits. Everything else (kappa surrogate, hygiene gates) is the
-same objective as `local/rich/grids/report.md`.
+remaining symmetry orbits. The objective machinery (kappa surrogate, connectivity,
+block clumps, adjacency) is imported from `swedish_grid.py`; what is unique here is
+the 180-degree symmetric driver — `squares_2x2`, the orbit walk, and its own
+feasibility gates.
 """
 
 import argparse
-import collections
 import math
 import random
 from pathlib import Path
 
+from swedish_grid import adjacent_pairs, block_components, connected, kappa_surrogate, load_dl
+
 N = 15
-C_BITS, ALPHA = 4.5861, 0.9878
-
-
-def load_dl(path, min_score):
-    counts = collections.Counter()
-    for line in open(path, encoding="utf-8"):
-        line = line.strip()
-        if not line:
-            continue
-        word, _, score = line.partition(";")
-        if int(score or 50) >= min_score:
-            counts[len(word)] += 1
-    return {length: math.log2(n) for length, n in counts.items() if n}
 
 
 def runs(grid):
@@ -56,47 +46,6 @@ def runs(grid):
     return out
 
 
-def kappa_surrogate(lengths, dl):
-    total = sum(lengths)
-    bits = sum(dl.get(length, 1.0) for length in lengths)
-    return C_BITS / (2 * ALPHA * (bits / total)) if total else 9.0
-
-
-def connected(grid):
-    cells = [(r, c) for r in range(N) for c in range(N) if not grid[r][c]]
-    if not cells:
-        return False
-    seen = {cells[0]}
-    stack = [cells[0]]
-    while stack:
-        r, c = stack.pop()
-        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            p = (r + dr, c + dc)
-            if 0 <= p[0] < N and 0 <= p[1] < N and not grid[p[0]][p[1]] and p not in seen:
-                seen.add(p)
-                stack.append(p)
-    return len(seen) == len(cells)
-
-
-def block_components(grid):
-    seen, sizes = set(), []
-    for r in range(N):
-        for c in range(N):
-            if grid[r][c] and (r, c) not in seen:
-                stack, size = [(r, c)], 0
-                seen.add((r, c))
-                while stack:
-                    a, b = stack.pop()
-                    size += 1
-                    for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                        p = (a + dr, b + dc)
-                        if 0 <= p[0] < N and 0 <= p[1] < N and grid[p[0]][p[1]] and p not in seen:
-                            seen.add(p)
-                            stack.append(p)
-                sizes.append(size)
-    return sizes
-
-
 def squares_2x2(grid):
     return sum(
         1
@@ -106,33 +55,22 @@ def squares_2x2(grid):
     )
 
 
-def adjacent_pairs(grid):
-    return sum(
-        1
-        for r in range(N)
-        for c in range(N)
-        if grid[r][c]
-        for dr, dc in ((0, 1), (1, 0))
-        if r + dr < N and c + dc < N and grid[r + dr][c + dc]
-    )
-
-
 def energy(grid, dl, want_long, long_length, max_fives, max_short_share):
     lengths = runs(grid)
     score = 40 * sum(1 for length in lengths if length < 3)
     score += 40 * sum(1 for length in lengths if length > long_length)
     have = sum(1 for length in lengths if length == long_length)
     score += 60 * max(0, want_long - have) + 25 * max(0, have - want_long)
-    if not connected(grid):
+    if not connected(grid, N, N):
         score += 120
     score += 3 * max(0, sum(1 for length in lengths if length == 5) - max_fives)
     short = sum(1 for length in lengths if length in (3, 4)) / len(lengths)
     score += 140 * max(0.0, short - max_short_share)
-    score += 8 * sum(max(0, size - 6) for size in block_components(grid))
+    score += 8 * sum(max(0, size - 6) for size in block_components(grid, N, N))
     score += 8 * max(0, squares_2x2(grid) - 3)
     score += 45 * kappa_surrogate(lengths, dl)
     score += 0.12 * abs(sum(map(sum, grid)) - 50)
-    score -= 0.10 * min(adjacent_pairs(grid), 44)
+    score -= 0.10 * min(adjacent_pairs(grid, N, N), 44)
     return score
 
 
@@ -186,9 +124,9 @@ def feasible(grid, long_length):
     lengths = runs(grid)
     return (
         all(3 <= length <= long_length for length in lengths)
-        and connected(grid)
+        and connected(grid, N, N)
         and sum(1 for length in lengths if length == long_length) == 2
-        and max(block_components(grid)) <= 6
+        and max(block_components(grid, N, N)) <= 6
         and squares_2x2(grid) <= 4
     )
 
@@ -228,7 +166,7 @@ def main():
                     "seed": seed,
                     "slots": len(lengths),
                     "blocks": sum(map(sum, grid)),
-                    "adjacent": adjacent_pairs(grid),
+                    "adjacent": adjacent_pairs(grid, N, N),
                     "share34": sum(1 for x in lengths if x in (3, 4)) / len(lengths),
                     "s69": sum(1 for x in lengths if 6 <= x <= 9),
                     "fives": sum(1 for x in lengths if x == 5),

@@ -25,6 +25,8 @@ import math
 import random
 from pathlib import Path
 
+from pin_long import cells_of
+
 C_BITS, ALPHA = 4.5861, 0.9878
 
 
@@ -268,11 +270,6 @@ def slots(grid, width, height, min_run):
             if r - start >= min_run:
                 out.append(("D", start, c, r - start))
     return out
-
-
-def cells_of(slot):
-    direction, r, c, length = slot
-    return [(r, c + i) if direction == "A" else (r + i, c) for i in range(length)]
 
 
 def tajenka_placements(grid, width, height, min_run, wanted):
