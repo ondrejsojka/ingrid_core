@@ -2,7 +2,17 @@
 """Interleaved A/B benchmark comparator for ingrid_core builds.
 
 Runs two binaries over the same fill workload in interleaved rounds (B, O, B, O, ...),
-extracts one timing per run, and reports a Mann-Whitney U comparison as JSON.
+extracts one timing per run, and reports a paired statistical comparison as JSON.
+
+Because each round gives both binaries the SAME seed, rounds form natural pairs. With a
+randomized solver, across-seed variance dwarfs most code effects, so the primary
+statistic is the paired Wilcoxon signed-rank test (exact, one-sided) on the per-round
+differences (baseline - candidate), plus an exact sign test. The classic cross-pair
+Mann-Whitney U is reported for reference only: under heavy across-input heterogeneity it
+is underpowered and will hide real improvements.
+
+Decision guidance: improvement iff wilcoxon_p_faster <= 0.05; regression iff
+wilcoxon_p_slower <= 0.05.
 
 Two metrics are supported:
 
@@ -130,6 +140,63 @@ def mann_whitney_u(candidate: list[float], baseline: list[float]) -> float:
     return u
 
 
+def signed_ranks(diffs: list[float]) -> list[float]:
+    """Absolute-value ranks with tie averaging (1-based), zero diffs already excluded."""
+    order = sorted(range(len(diffs)), key=lambda i: abs(diffs[i]))
+    ranks = [0.0] * len(diffs)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and abs(diffs[order[j + 1]]) == abs(diffs[order[i]]):
+            j += 1
+        avg = (i + j) / 2.0 + 1.0
+        for k in range(i, j + 1):
+            ranks[order[k]] = avg
+        i = j + 1
+    return ranks
+
+
+def wilcoxon_exact_p(diffs: list[float]) -> tuple[float, float]:
+    """Exact one-sided p-values for the paired Wilcoxon signed-rank test.
+
+    diffs are (baseline - candidate), so positive means candidate was faster.
+    Returns (p_faster, p_slower): tail probabilities of the observed W+ under the null,
+    computed exactly by enumerating all 2**n sign assignments over the observed ranks.
+    """
+    active = [d for d in diffs if d != 0]
+    n_pairs = len(active)
+    if n_pairs == 0:
+        return 1.0, 1.0
+    if n_pairs > 24:
+        raise ValueError("exact Wilcoxon enumeration capped at n=24 rounds")
+    ranks = signed_ranks(active)
+    w_plus = sum(r for r, d in zip(ranks, active) if d > 0)
+    # Ranks may be half-integers under ties; scale by 2 for integer DP.
+    weights = [int(round(2 * r)) for r in ranks]
+    observed = int(round(2 * w_plus))
+    total_rank2 = sum(weights)
+    dist = {0: 1}
+    for weight in weights:
+        nxt = dict(dist)
+        for subtotal, count in dist.items():
+            nxt[subtotal + weight] = nxt.get(subtotal + weight, 0) + count
+        dist = nxt
+    states = 2**n_pairs
+    p_ge = sum(c for s, c in dist.items() if s >= observed) / states
+    p_le = sum(c for s, c in dist.items() if s <= observed) / states
+    # p_ge = P(W+ >= observed): small when candidate is actually SLOWER (W+ small).
+    # We want: p_faster = P(W+ >= observed) small => fast improvement claim.
+    return p_ge, p_le
+
+
+def sign_test_p_faster(wins: int, n_pairs: int) -> float:
+    from math import comb
+
+    if n_pairs == 0:
+        return 1.0
+    return sum(comb(n_pairs, k) for k in range(wins, n_pairs + 1)) / 2**n_pairs
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--baseline", required=True, type=Path)
@@ -185,6 +252,20 @@ def main() -> int:
     baseline_median = statistics.median(baseline_values)
     candidate_median = statistics.median(candidate_values)
     ratio = candidate_median / baseline_median if baseline_median else float("nan")
+
+    diffs = [b - c for b, c in zip(baseline_values, candidate_values)]
+    paired_ratios = [c / b for b, c in zip(baseline_values, candidate_values) if b]
+    active = [d for d in diffs if d != 0]
+    wins = sum(1 for d in active if d > 0)
+    p_faster, p_slower = wilcoxon_exact_p(diffs)
+    sign_p = sign_test_p_faster(wins, len(active))
+    if p_faster <= 0.05:
+        paired_hint = "improvement"
+    elif p_slower <= 0.05:
+        paired_hint = "regression"
+    else:
+        paired_hint = "neutral"
+
     report = {
         "u": u,
         "n_pairs": args.rounds * args.rounds,
@@ -192,6 +273,18 @@ def main() -> int:
         "candidate_median_ms": candidate_median,
         "median_ratio": ratio,
         "improvement_pct": (1.0 - ratio) * 100.0,
+        "paired": {
+            "n_nonzero": len(active),
+            "wins": wins,
+            "losses": len(active) - wins,
+            "sum_positive_diffs_ms": sum(d for d in active if d > 0),
+            "wilcoxon_p_faster": p_faster,
+            "wilcoxon_p_slower": p_slower,
+            "sign_p_faster": sign_p,
+            "median_paired_diff_ms": statistics.median(diffs) if diffs else float("nan"),
+            "median_paired_ratio": statistics.median(paired_ratios) if paired_ratios else float("nan"),
+            "verdict_hint": paired_hint,
+        },
         "baseline_timings_ms": baseline_values,
         "candidate_timings_ms": candidate_values,
         "censored_runs": censored,
