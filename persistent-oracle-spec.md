@@ -86,6 +86,14 @@ The third one is the opinionated part. A boolean API here is a trap.
 - **Don't bundle the search.** I do not want "find me the best template". I want a fast
   yes/no. The search is mine and I want to keep it in a language I can iterate in.
 
+## The other half
+
+A fast oracle that answers `yes`/`no` still leaves the outer search doing rejection
+sampling. The companion want is **`template-diagnostics-spec.md`**: the post-AC domain
+profile and the `dom/wdeg` crossing weights, so a rejected geometry says *where* it is
+tight instead of merely that it is. Throughput without signal just lets you sample the
+same wall faster.
+
 ## Open questions I don't have answers to
 
 - Is initial AC alone a good enough oracle, or does it pass too many templates that then

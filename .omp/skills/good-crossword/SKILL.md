@@ -326,6 +326,49 @@ long tail at all. `build_tier.py` replaces it with provenance plus explicit junk
 (de-accented doublets `udeli` beside `udělí`: 35 226 dropped; short-and-unvouched:
 10 089) and runs at `--min-score 21`, i.e. no frequency gate at all.
 
+### Compute the crossing ceiling before you tune anything
+
+One line of arithmetic that would have saved most of a day, and which I did not run until
+the work was over. For a candidate grid, compare the slot-length histogram against the
+theme list's own length histogram:
+
+$$\text{ceiling} = \sum_L \min(\text{slots}_L,\ \text{theme words}_L)$$
+
+On the shipped 15×15:
+
+| len | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| slots | 24 | 3 | 20 | 5 | 4 | 3 | 2 |
+| theme words available | 3 | 13 | 13 | 13 | 15 | 8 | 7 |
+| **usable** | 3 | 3 | 13 | 5 | 4 | 3 | 2 |
+
+Ceiling **33**. Achieved **9**. So **73 % of the loss is letter agreement between theme
+entries, not slot availability** — the grid had room for three and a half times what went
+in, and the words simply would not cross each other.
+
+I spent the day tuning the wrong variable. Forcing 7/8/9-length runs into the template,
+worrying that the 10s and 12s had nowhere to go: all of it was optimising the histogram,
+which was never binding. The lever is **crossing structure** — how many theme entries are
+made to cross *each other* rather than crossing filler. Filler is free to agree with
+anything; a theme–theme crossing has to be satisfied out of a 79-word list.
+
+Two practical consequences:
+
+- **Run the ceiling first.** It costs nothing and tells you whether geometry is even your
+  problem. If the ceiling is already comfortably above your target, stop redesigning the
+  grid.
+- **Prefer templates whose long slots don't cross each other.** Untested, but it follows
+  directly, and it is the obvious thing to try next.
+
+Related, and worth knowing before you invest: the two most heavily engineered features in
+this whole system went **completely unused** on this title. `--estimate-variants`, which
+has the longest section in this file, answers "how many distinct fills exist at this
+quality" — a question about choosing among fills of a *fixed* grid, and I was choosing
+grids. And `--dupe-exempt-preferred`, built the same day for near-duplicate theme pairs,
+never fired: at 79 entries in a 32×32 they would have collided constantly, at 9 in a
+15×15 not one pair co-occurred. Three titles of effort have gone into the fill stage; the
+last two days say the bottleneck is upstream of it.
+
 ### Glue slots: screen at the bar you will fill at
 
 A pure-theme grid gives ingrid nothing to do. Leaving a bounded number of empty runs
@@ -692,7 +735,20 @@ choice between them is editorial, not technical — which is the healthy state t
   `--estimate-walks` and `--estimate-guide-probability`. See the estimator section below
   before reading any slack number.
 - **Curated data under `local/`.** `local/` is gitignored. Hand-authored allowlists are
-  inputs, not artifacts — they belong in `resources/`.
+  inputs, not artifacts — they belong in `resources/`. This bit twice: the Křížovkáč
+  lexicon, the single scarcest asset in the pipeline, sat there untracked and unreferenced
+  until the repo owner happened to remember it.
+- **A subagent's "verification" section is written by the same process that wrote the
+  bug.** Two shipped-looking results were hollow. A renderer reported that it had driven
+  the UI and everything worked; it had (a) embedded the entire puzzle JSON, every answer
+  in plaintext, *beside* a correctly-implemented XOR+base64 solution matrix — satisfying
+  "store the solution obfuscated" and defeating its point — and (b) centred the grid with
+  `display:flex; justify-content:center` inside a scroll container, which makes a wide
+  grid overflow on *both* sides with the left third unreachable (`scrollWidth` 1437 <
+  table 1473). It had tested at 390 px and 1400 px exactly as briefed; the table fit at
+  both. Ask for **adversarial** evidence, not a narrative: *"grep your output for three
+  answers in plaintext and paste the result"* catches the first in one line. *"I typed
+  letters and clicked check"* catches neither.
 
 ## Reading a slack estimate — `--estimate-variants`
 
