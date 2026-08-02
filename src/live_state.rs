@@ -108,12 +108,8 @@ impl LiveSearchState {
     }
 
     #[must_use]
-    pub(crate) fn can_satisfy_target(
-        &self,
-        config: &GridConfig,
-        minimum_preferred_words: usize,
-    ) -> bool {
-        can_satisfy_minimum_preferred_words(config, &self.slots, minimum_preferred_words)
+    pub(crate) fn can_satisfy_target(&self, minimum_preferred_words: usize) -> bool {
+        can_satisfy_minimum_preferred_words(&self.slots, minimum_preferred_words)
     }
 
     /// Select the strict minimum-priority slot. Unlike ordinary search, this has no randomized
@@ -209,16 +205,11 @@ impl LiveSearchState {
 
         for (index, choice) in choices.iter().enumerate() {
             let slot = &config.slot_configs[choice.slot_id];
-            let dupes = config
-                .word_list
-                .dupe_index
-                .get_dupes_by_length(
-                    (slot.length, choice.word_id),
-                    config.word_list.exempt_preferred_dupes,
-                    &|global_word_id| {
-                        config.word_list.word_tier(global_word_id) == WordTier::Preferred
-                    },
-                );
+            let dupes = config.word_list.dupe_index.get_dupes_by_length(
+                (slot.length, choice.word_id),
+                config.word_list.exempt_preferred_dupes,
+                &|global_word_id| config.word_list.word_tier(global_word_id) == WordTier::Preferred,
+            );
             for other_choice in &choices[index + 1..] {
                 let other_slot = &config.slot_configs[other_choice.slot_id];
                 if dupes
@@ -246,11 +237,22 @@ fn build_slots(config: &GridConfig) -> Vec<Slot> {
             let is_fixed = slot_config
                 .complete_fill(config.fill, config.width)
                 .is_some();
+            let preferred_by_word: Vec<bool> = (0..config.word_list.words[slot_config.length]
+                .len())
+                .map(|word_id| {
+                    config.word_list.word_tier((slot_config.length, word_id)) == WordTier::Preferred
+                })
+                .collect();
             Slot {
                 id: slot_config.id,
                 length: slot_config.length,
                 eliminations: vec![None; config.word_list.words[slot_config.length].len()],
                 remaining_option_count: config.slot_options[slot_config.id].len(),
+                preferred_remaining: config.slot_options[slot_config.id]
+                    .iter()
+                    .filter(|&&word_id| preferred_by_word[word_id])
+                    .count(),
+                preferred_by_word,
                 fixed_word_id: is_fixed.then(|| {
                     assert_eq!(config.slot_options[slot_config.id].len(), 1);
                     config.slot_options[slot_config.id][0]

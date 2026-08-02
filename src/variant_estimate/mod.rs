@@ -249,10 +249,7 @@ fn exact_root_count(
     prepared: &PreparedSearch,
     minimum_preferred_words: usize,
 ) -> Option<u64> {
-    if !prepared
-        .root
-        .can_satisfy_target(config, minimum_preferred_words)
-    {
+    if !prepared.root.can_satisfy_target(minimum_preferred_words) {
         return Some(0);
     }
     if prepared.root.best_slot_by_priority(config).is_some() {

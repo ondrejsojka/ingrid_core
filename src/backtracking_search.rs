@@ -19,7 +19,6 @@ use crate::grid_config::{Choice, Crossing, GridConfig, SlotId};
 use crate::live_state::PreparedSearch;
 use crate::types::WordId;
 use crate::util::{build_glyph_counts_by_cell, GlyphCountsByCell};
-use crate::word_list::WordTier;
 
 /// If the previously-attempted slot is within this distance of the "best" (lowest-priority-value)
 /// slot, we should stick with the previous one instead of switching (per Balafoutis).
@@ -80,6 +79,16 @@ pub struct Slot {
     /// includes hidden words that aren't available for this fill attempt.
     pub(crate) remaining_option_count: usize,
 
+    /// How many of those remaining options are in the Preferred tier? Kept incrementally by
+    /// `add_elimination`/`remove_elimination` so that `can_satisfy_minimum_preferred_words` is
+    /// O(#slots) instead of rescanning every slot's options.
+    pub(crate) preferred_remaining: usize,
+
+    /// Cache of each word's tier over this slot's whole word domain, mirroring
+    /// `word_list.word_tier((length, word_id)) == WordTier::Preferred` as a flat lookup for the
+    /// hot elimination path and for fixed slots in the global preferred-word bound.
+    pub(crate) preferred_by_word: Vec<bool>,
+
     // The word id explicitly chosen for this slot during the fill process (or as part of the input
     // to the fill process), if there is one. This takes precedence over `eliminations`,
     // `glyph_counts_by_cell`, and `remaining_option_count`, which will be kept in the state they
@@ -122,6 +131,7 @@ impl Slot {
 
         self.eliminations[word_id] = Some(blamed_slot_id);
         self.remaining_option_count -= 1;
+        self.preferred_remaining -= usize::from(self.preferred_by_word[word_id]);
 
         let word = &config.word_list.words[self.length][word_id];
         for (cell_idx, &glyph) in word.glyphs.iter().enumerate() {
@@ -139,6 +149,7 @@ impl Slot {
 
         self.eliminations[word_id] = None;
         self.remaining_option_count += 1;
+        self.preferred_remaining += usize::from(self.preferred_by_word[word_id]);
 
         let word = &config.word_list.words[self.length][word_id];
         for (cell_idx, &glyph) in word.glyphs.iter().enumerate() {
@@ -288,8 +299,10 @@ fn undo_provisional(
     }
 }
 
+/// Check the global Preferred-tier cardinality bound: a fixed slot counts if its chosen word is
+/// Preferred, an unfixed slot if at least one of its live options is Preferred. Per-slot counts
+/// are maintained incrementally on `Slot`, so this is O(#slots).
 pub(crate) fn can_satisfy_minimum_preferred_words(
-    config: &GridConfig,
     slots: &[Slot],
     minimum_preferred_words: usize,
 ) -> bool {
@@ -301,14 +314,8 @@ pub(crate) fn can_satisfy_minimum_preferred_words(
         .iter()
         .filter(|slot| {
             slot.fixed_word_id.map_or_else(
-                || {
-                    config.slot_options[slot.id].iter().any(|&word_id| {
-                        slot.eliminations[word_id].is_none()
-                            && config.word_list.word_tier((slot.length, word_id))
-                                == WordTier::Preferred
-                    })
-                },
-                |word_id| config.word_list.word_tier((slot.length, word_id)) == WordTier::Preferred,
+                || slot.preferred_remaining > 0,
+                |word_id| slot.preferred_by_word[word_id],
             )
         })
         .take(minimum_preferred_words)
@@ -467,7 +474,7 @@ pub(crate) fn maintain_arc_consistency(
                 }
             }
 
-            if can_satisfy_minimum_preferred_words(config, slots, minimum_preferred_words) {
+            if can_satisfy_minimum_preferred_words(slots, minimum_preferred_words) {
                 true
             } else {
                 // The cardinality check rejected an otherwise arc-consistent provisional update.
@@ -482,9 +489,7 @@ pub(crate) fn maintain_arc_consistency(
             undo_provisional(slots, config, mode, None);
 
             for (slot_id, weight) in crossing_weights.iter_mut().enumerate() {
-                *weight = 1.0
-                    + ((*weight - 1.0) * WEIGHT_AGE_FACTOR)
-                    + weight_updates.get(&slot_id).unwrap_or(&0.0);
+                *weight = 1.0 + ((*weight - 1.0) * WEIGHT_AGE_FACTOR) + weight_updates[slot_id];
             }
 
             false
@@ -858,7 +863,7 @@ pub(crate) fn find_fill_from_prepared(
 ) -> Result<FillSuccess, FillFailure> {
     if !prepared
         .root
-        .can_satisfy_target(config, options.minimum_preferred_words)
+        .can_satisfy_target(options.minimum_preferred_words)
     {
         return Err(FillFailure::HardFailure);
     }
