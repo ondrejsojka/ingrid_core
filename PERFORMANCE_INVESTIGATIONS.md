@@ -71,4 +71,30 @@ Reading of the profile + code:
 
 ## Round log
 
-(pending)
+### Round 1 (2026-08-02) — 2 candidates, BOTH KEEP after protocol correction
+
+- `preferred_support_cache` — KEEP. Median -30% time-to-6 (replication -23%); paired
+  Wilcoxon p=0.0098 / p=0.0010. Report: docs/perf_investigations/preferred_support_cache.md.
+- `ac_queue_priority` — KEEP. Median -27% primary, -25% s1_american, s2 neutral; paired
+  Wilcoxon p=0.0137. Report: docs/perf_investigations/ac_queue_priority.md.
+  Sub-finding (do not retry): lazy BinaryHeap AC queue regressed (U=45) — enqueues
+  outnumber pops, per-enqueue pushes cost more than the rescan they replace.
+- Combined merge: src commit bed1f5e. Verification comparator run merged-vs-original-
+  baseline recorded in local logs (verify_r1).
+
+**PROTOCOL CORRECTION (important):** both workers returned DISCARD under the mandated
+cross-pair U >= 73 despite large real effects, because same-seed pairing + cross-pair U
+is a statistical mismatch — across-seed variance (0.5s-93s time-to-6) dominates cross
+pairs. The comparator now computes paired Wilcoxon signed-rank (exact, 2^n enumeration)
+and sign test; KEEP gate is p_faster <= 0.05, secondary regression gate p_slower <= 0.05.
+The skill's measurement-protocol.md and optimizer-worker.md were updated generically.
+Workers must use the comparator's `paired` block, not bare U, for verdicts from now on.
+
+### Round 2 candidates
+
+- `bitset_domains` — replace 16B/word dense eliminations with compact per-length-domain
+  representation (bitset + u8 blame or equivalent): fork/clone collapse, cache locality
+  for `is_word_eliminated` in AC. Must reproduce identical same-seed event streams.
+- `wordlist_build_parallel` — dictionary load ~4.3s constant per CLI run: profile the
+  load+config build and parallelize/cheapen (normalization, glyph encode, dupe index,
+  sort_slot_options). Visible on s2_fast_wall and every real invocation.
