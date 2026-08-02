@@ -356,10 +356,13 @@ class OraclePool:
         `O(jobs)` rather than `O(items)` and an endless generator of candidate placements is a
         perfectly good argument.
 
-        `stop_on` is a predicate on the verdict. There is exactly one place in this loop where
-        work begins, and it runs only after an answer has been delivered and did not match, so
-        **no probe is started once an answer matches**, and none is started while the caller is
-        between answers either.
+        `stop_on` is a predicate on the verdict. Each turn takes the *whole* set of probes that
+        have completed and decides on all of them together, because `wait` hands back batches and
+        a match anywhere in a batch has to stop the batch. There is exactly one place in this loop
+        where work begins, and it runs only after a whole batch has been delivered without a
+        match, so **no probe is started once an answer matches**, and none is started while the
+        caller is between answers either. Answers that completed alongside a match are discarded
+        along with the probes still running.
 
         There is deliberately no claim of cancellation: the protocol cannot abandon a probe the
         child has already begun, so on a match the at most `jobs - 1` probes still running are
@@ -379,24 +382,51 @@ class OraclePool:
                     in_flight[pool.submit(self.probe, grid, ms=ms, want_fill=want_fill)] = key
                     return
 
+
+            def completed():
+                """Every finished probe, in submission order.
+
+                `wait` reports the futures that tripped it, which need not be every one that has
+                finished by the time it returns, and it reports them as a set whose iteration
+                order is the hash of an address. Neither is a basis for deciding anything.
+                """
+                return [future for future in in_flight if future.done()]
+
+            def match_in(answers):
+                if stop_on is None:
+                    return None
+                return next(((key, verdict) for key, verdict in answers if stop_on(verdict)), None)
+
+            def a_match_has_landed():
+                """Has an answer arrived, unread, since we last decided? Peeks; consumes nothing."""
+                return stop_on is not None and any(
+                    future.done() and future.exception() is None and stop_on(future.result())
+                    for future in in_flight
+                )
+
             for _ in self._all:
                 submit_next()
 
             while in_flight:
-                # One answer per turn: a batch of simultaneous completions would let a later one
-                # submit work after an earlier one had already matched.
-                done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
-                future = next(iter(done))
-                key = in_flight.pop(future)
-                verdict = future.result()
-                if stop_on is not None and stop_on(verdict):
-                    yield key, verdict
+                wait(in_flight, return_when=FIRST_COMPLETED)
+                # Decide on everything that has finished, together. Looking at one arbitrary
+                # member would let a non-match start replacement work while the match sat unread
+                # beside it.
+                batch = [(in_flight.pop(future), future.result()) for future in completed()]
+                matched = match_in(batch)
+                if matched is not None:
+                    # Its batch-mates finished alongside it and are discarded exactly like the
+                    # probes still running, which is what a match means here.
+                    yield matched
                     return
-                yield key, verdict
-                # Only now, with the answer delivered and no match, is more work started. Doing it
-                # before the yield would hold a finished answer hostage to a slow producer, and
-                # would start a probe while the caller still held the decision.
-                submit_next()
+                for key, verdict in batch:
+                    yield key, verdict
+                    # Work starts only here, and only if nothing has matched in the meantime --
+                    # a probe can finish while the caller holds us between answers, and a match
+                    # that has already landed must stop the window even though its turn to be
+                    # delivered has not come round yet.
+                    if not a_match_has_landed():
+                        submit_next()
 
     def close(self):
         for oracle in self._all:

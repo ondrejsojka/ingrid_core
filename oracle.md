@@ -206,29 +206,35 @@ thread, the banner read has a timeout, and a child that never becomes ready is k
 
 `OraclePool(jobs=N, ...)` starts N processes — N copies of the dictionary, N probes at once — and
 `pool.probe_many(items, stop_on=...)` yields `(key, verdict)` as answers arrive. It is a rolling
-window over a `ThreadPoolExecutor`: fill the window, wait for one answer, decide, submit exactly
-one replacement. Everything below falls out of there being one place in that loop where work
-begins:
+window over a `ThreadPoolExecutor`: fill the window, wait, decide on everything that has
+finished, deliver it, and submit one replacement per delivered non-match.
 
 - At most `jobs` probes are in flight, and `items` is pulled one element at a time, so memory is
   `O(jobs)` and an endless generator of candidate placements is a legitimate argument. An earlier
   version drained the whole iterable before starting anything, which stalled the first probe
   behind a slow producer and would have hung forever on an infinite one.
-- **No probe is started once an answer matches**, and none is started while the caller is between
-  answers either: the replacement is submitted only after an answer has been delivered and did not
-  match.
-- A finished answer is never held back waiting on the producer, because the pull happens after the
-  yield rather than before it.
-- On a match the at most `jobs - 1` probes still running are drained, their answers discarded, and
-  the generator returns. Its runtime after a match is one probe, not the remaining work. Nothing
-  here is described as cancellation, because none of it is.
+- **No probe is started once a matching answer exists**, whether or not it has been delivered.
+  Two things are needed for that, and each was wrong once. Probes finish in batches, so the turn
+  decides on *every* completed probe rather than on one arbitrary member of the set `wait` hands
+  back — deciding on one member lets a non-match beside the match start replacement work. And a
+  probe can finish while the caller is away between answers, so the code peeks for a landed match
+  before each submission rather than assuming nothing changed while it was suspended.
+- A finished answer is never held back waiting on the producer: the pull happens after the yield,
+  not before it.
+- On a match, the probes still running and any that finished in the same batch are drained, their
+  answers discarded, and the generator returns. Its runtime after a match is one probe, not the
+  remaining work. Nothing here is described as cancellation, because none of it is.
 
-`scripts/test_oracle_client.py` holds all of this down against a fake pool with no binary and no
-timing assertions: each fake probe blocks on an event the test releases, so "the window held two
-probes", "nothing started after the match", "nothing started while the caller held the generator"
-and "the answer arrived before the producer was asked again" are all decided by handshakes rather
-than by sleeps. The laziness test hangs, rather than merely slowing down, against an eager
-implementation.
+A probe that starts while a match is merely *running* is not a violation and cannot be avoided
+without giving up the window: nothing had been decided yet.
+
+`scripts/test_oracle_client.py` holds this down against a fake pool, with no binary and no timing
+assertions: each fake probe blocks on an event the test releases, and a `wait` shim manufactures
+the simultaneous-completion batch, so every claim is decided by a handshake. Each guard was
+checked by breaking it — deciding on one arbitrary batch member fails
+`test_a_match_completing_alongside_a_non_match_stops_replacement_work`, dropping the pre-submit
+peek fails `test_a_match_that_lands_between_answers_stops_replacement_work`, and consuming the
+input eagerly hangs `test_a_non_matching_answer_is_delivered_before_more_work_is_pulled` outright.
 
 Run the client directly to probe grid files: `python3 scripts/oracle.py grid.txt --wordlist
 std.dict --probe-ms 500 --fill`. Exit status 1 means at least one grid was proven unfillable, 2

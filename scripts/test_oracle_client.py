@@ -14,10 +14,12 @@ import queue
 import sys
 import threading
 import time
+from concurrent.futures import ALL_COMPLETED, FIRST_COMPLETED
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import oracle  # noqa: E402
 from oracle import OraclePool, Verdict, _as_rows  # noqa: E402
 
 
@@ -49,13 +51,18 @@ def test_rows_that_would_reframe_the_request_are_refused():
 
 
 class _Gate:
-    """One probe's handshake: the test waits for `started` and decides when `release` happens."""
+    """One probe's handshake.
+
+    The test waits for `started`, decides when `release` happens, and can wait for `answered` to
+    know the probe has produced its verdict.
+    """
 
     def __init__(self, name, state="unknown"):
         self.name = name
         self.state = state
         self.started = threading.Event()
         self.release = threading.Event()
+        self.answered = threading.Event()
 
     def item(self):
         return (self.name, self)
@@ -65,6 +72,7 @@ class _GatedOracle:
     def probe(self, gate, ms=None, want_fill=False):
         gate.started.set()
         assert gate.release.wait(timeout=5), f"{gate.name} was never released"
+        gate.answered.set()
         return Verdict(gate.state, 1, 1, 0, 0, 0)
 
     def close(self):
@@ -170,6 +178,79 @@ def test_no_probe_starts_after_a_match():
     busy.release.set()
     assert pump.finish() == []
     assert not never.started.is_set(), "the drain started fresh work"
+
+
+def test_a_match_completing_alongside_a_non_match_stops_replacement_work():
+    """`wait` hands back batches, and a match anywhere in one has to stop the batch.
+
+    Deciding one arbitrary member at a time lets a non-match start replacement work while the
+    match sits unread beside it. The shim forces exactly that batch with no reliance on timing:
+    the first `wait` does not return until every probe in the window has finished, so `done`
+    necessarily holds both.
+    """
+    miss, hit, extra = _Gate("miss"), _Gate("hit", "fillable"), _Gate("extra")
+    for gate in (miss, hit, extra):
+        gate.release.set()
+    pool = _FakePool(2)
+
+    primed = threading.Event()
+    real_wait = oracle.wait
+
+    def batching_wait(futures, return_when=FIRST_COMPLETED, **kwargs):
+        # `in_flight` is a dict, so this arrives in submission order: miss, then hit.
+        ordered = list(futures)
+        if not primed.is_set() and len(ordered) > 1:
+            real_wait(ordered, return_when=ALL_COMPLETED)
+            primed.set()
+            # Hand the batch back whole and in submission order. Returning a real set would leave
+            # "which member gets looked at first" to the hash of a future's address, and the
+            # difference between deciding on the batch and deciding on one arbitrary member of it
+            # is exactly what this test is for.
+            return ordered, []
+        return real_wait(ordered, return_when=return_when, **kwargs)
+
+    oracle.wait = batching_wait
+    try:
+        seen = [
+            key
+            for key, _ in pool.probe_many(
+                [gate.item() for gate in (miss, hit, extra)], stop_on=_MATCH
+            )
+        ]
+    finally:
+        oracle.wait = real_wait
+
+    assert primed.is_set(), "the shim never saw a full window, so nothing was tested"
+    assert seen == ["hit"], seen
+    assert not extra.started.is_set(), "replacement work started despite a completed match"
+
+
+def test_a_match_that_lands_between_answers_stops_replacement_work():
+    """A probe can finish while the caller is away, before its turn to be delivered.
+
+    `miss` is answered and handed over; the caller is then parked while `hit` finishes. Resuming
+    must not start `extra`, even though `hit`'s answer has not been delivered yet.
+    """
+    miss, hit, extra = _Gate("miss"), _Gate("hit", "fillable"), _Gate("extra")
+    hold = threading.Event()
+    pool = _FakePool(2)
+    pump = _Pump(
+        pool.probe_many([g.item() for g in (miss, hit, extra)], stop_on=_MATCH), hold=hold
+    )
+    _await(miss.started, "miss")
+    _await(hit.started, "hit")
+
+    miss.release.set()
+    assert pump.next()[0] == "miss"
+    # The caller is parked on `hold`. Land the match behind its back.
+    hit.release.set()
+    _await(hit.answered, "hit's verdict")
+    _settle()  # let the executor mark the future done; a precondition, not an assertion
+
+    hold.set()
+    rest = pump.finish()
+    assert [key for key, _ in rest] == ["hit"], rest
+    assert not extra.started.is_set(), "work started after a match had already landed"
 
 
 def test_no_probe_starts_while_the_caller_holds_the_generator():
