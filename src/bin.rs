@@ -296,7 +296,7 @@ fn build_word_list(
             provider: WordListSourceConfigProvider::File {
                 path: preferred_wordlist_path.into(),
             },
-            normalization: normalization.clone(),
+            normalization: *normalization,
         });
     }
     source_configs.push(match args.wordlist.as_deref() {
@@ -306,13 +306,13 @@ fn build_word_list(
             provider: WordListSourceConfigProvider::File {
                 path: wordlist_path.into(),
             },
-            normalization: normalization.clone(),
+            normalization: *normalization,
         },
         None => WordListSourceConfig {
             id: "standard".into(),
             enabled: true,
             provider: WordListSourceConfigProvider::FileContents { contents: STWL_RAW },
-            normalization: normalization.clone(),
+            normalization: *normalization,
         },
     });
 

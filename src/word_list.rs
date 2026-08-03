@@ -1,11 +1,10 @@
 use either::Either;
-use lazy_static::lazy_static;
 use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::Debug;
 use std::fs::File;
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::io::Read;
 use std::{fmt, fs, io, mem};
 use unicode_categories::UnicodeCategories;
@@ -15,23 +14,80 @@ use crate::dupe_index::{AnyDupeIndex, BoxedDupeIndex, DupeIndex};
 use crate::types::{GlobalWordId, GlyphId, WordId};
 use crate::MAX_SLOT_LENGTH;
 
-lazy_static! {
-    /// Completely arbitrary mapping from letter to point value.
-    static ref LETTER_POINTS: HashMap<char, u16> = {
-        let chars_and_scores: Vec<(&str, u16)> = vec![
-            ("aeilnorstu", 1),
-            ("dg", 2),
-            ("bcmp", 3),
-            ("fhvwy", 4),
-            ("k", 5),
-            ("jx", 8),
-            ("qz", 10),
-        ];
-        chars_and_scores
-            .iter()
-            .flat_map(|(chars_str, score)| chars_str.chars().map(|char| (char, *score)))
-            .collect()
-    };
+/// A fast, non-cryptographic hasher (FxHash-style rotate-multiply) for the internal word-list
+/// maps. Loading a dictionary hashes every word several times, and the std `SipHash` dominates
+/// that phase; these maps are keyed by dictionary content, not adversarial input.
+#[derive(Clone, Default)]
+pub struct FastHasher(u64);
+
+impl FastHasher {
+    const MULT: u64 = 0x517c_c1b7_2722_0a95;
+
+    #[inline]
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(Self::MULT);
+    }
+}
+
+impl Hasher for FastHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for chunk in &mut chunks {
+            self.add(u64::from_le_bytes(chunk.try_into().unwrap()));
+        }
+        let remainder = chunks.remainder();
+        if !remainder.is_empty() {
+            let mut padded = [0u8; 8];
+            padded[..remainder.len()].copy_from_slice(remainder);
+            self.add(u64::from_le_bytes(padded));
+        }
+    }
+
+    #[inline]
+    fn write_u8(&mut self, value: u8) {
+        self.add(u64::from(value));
+    }
+
+    #[inline]
+    fn write_u32(&mut self, value: u32) {
+        self.add(u64::from(value));
+    }
+
+    #[inline]
+    fn write_u64(&mut self, value: u64) {
+        self.add(value);
+    }
+
+    #[inline]
+    fn write_usize(&mut self, value: usize) {
+        self.add(value as u64);
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// Build-hasher type used by all hot word-list maps.
+pub type FastBuildHasher = BuildHasherDefault<FastHasher>;
+/// `HashMap` using the fast word-list hasher.
+pub type FastHashMap<K, V> = HashMap<K, V, FastBuildHasher>;
+
+/// Completely arbitrary mapping from letter to point value.
+#[inline]
+fn letter_points(char: char) -> u16 {
+    // 'b', 'c', 'm', 'p' and every other character score the wildcard 3.
+    match char {
+        'a' | 'e' | 'i' | 'l' | 'n' | 'o' | 'r' | 's' | 't' | 'u' => 1,
+        'd' | 'g' => 2,
+        'k' => 5,
+        'j' | 'x' => 8,
+        'q' | 'z' => 10,
+        'f' | 'h' | 'v' | 'w' | 'y' => 4,
+        _ => 3,
+    }
 }
 
 /// The inclusion priority assigned to a word.
@@ -78,6 +134,25 @@ pub struct Word {
 /// use in the actual fill engine.
 #[must_use]
 pub fn normalize_word(canonical: &str, settings: &Option<NormalizationSettings>) -> String {
+    // Fast path: on pure ASCII input, lowercasing is byte-wise, NFC/NFD and mark removal are
+    // identities, and `is_alphanumeric`/`is_whitespace` reduce to byte classes.
+    if canonical.is_ascii() {
+        let strip_punctuation = settings.as_ref().is_some_and(|s| s.strip_punctuation);
+        let mut normalized = String::with_capacity(canonical.len());
+        for &byte in canonical.as_bytes() {
+            let char = char::from(byte);
+            let keep = if strip_punctuation {
+                char.is_alphanumeric()
+            } else {
+                !char.is_whitespace()
+            };
+            if keep {
+                normalized.push(char::from(byte.to_ascii_lowercase()));
+            }
+        }
+        return normalized;
+    }
+
     let normalized = canonical.to_lowercase();
 
     let normalized = if settings.as_ref().is_some_and(|s| s.convert_diacritics) {
@@ -167,7 +242,7 @@ pub enum WordListSourceConfigProvider {
     FileContents { contents: &'static str },
 }
 
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone, Copy, Hash)]
 pub struct NormalizationSettings {
     /// Remove punctuation from the grid representation of words from this source?
     pub strip_punctuation: bool,
@@ -200,7 +275,7 @@ impl WordListSourceConfig {
             WordListSourceConfigProvider::Memory { .. }
             | WordListSourceConfigProvider::FileContents { .. } => None,
             WordListSourceConfigProvider::File { path, .. } => {
-                let mut hasher = DefaultHasher::new();
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 path.hash(&mut hasher);
                 fs::metadata(path).ok()?.modified().ok().hash(&mut hasher);
                 self.normalization.hash(&mut hasher);
@@ -222,7 +297,7 @@ pub struct WordListSourceState {
     pub id: String,
     pub entries: Vec<RawWordListEntry>,
     pub fingerprint: Option<u64>,
-    pub index: HashMap<String, usize>,
+    pub index: FastHashMap<String, usize>,
     pub errors: Vec<WordListError>,
     pub pending_updates: HashMap<String, PendingWordListUpdate>,
 }
@@ -271,51 +346,169 @@ pub struct RawWordListEntry {
     pub score: u16,
 }
 
-fn parse_word_list_file_contents(
-    file_contents: &str,
-    normalization: &Option<NormalizationSettings>,
-    index: &mut HashMap<String, usize>,
-    errors: &mut Vec<WordListError>,
-) -> Vec<RawWordListEntry> {
-    let mut entries = Vec::with_capacity(file_contents.lines().count());
+/// One parse outcome for a single dictionary line, produced by a parallel parse chunk and
+/// consumed (in exact file order) by the merge in [`parse_word_list_file_contents`]. Carrying
+/// unconsumed score text lets the merge apply the sequential check order: replacement-char
+/// error, then empty/dup skip, then score parse.
+enum ParseItem<'a> {
+    Entry {
+        canonical: &'a str,
+        normalized: String,
+        length: usize,
+        raw_score: Option<&'a str>,
+    },
+    Error(WordListError),
+    Skip,
+}
 
-    for line in file_contents.lines() {
-        if errors.len() > 100 {
-            break;
-        }
+/// Parse one chunk of a dictionary file (split on line boundaries) into ordered [`ParseItem`]s.
+/// No de-duplication or score validation happens here: both must observe the global line order,
+/// which only the merge sees.
+fn parse_chunk<'a>(
+    chunk: &'a str,
+    normalization: Option<NormalizationSettings>,
+    items: &mut Vec<ParseItem<'a>>,
+) {
+    for line in chunk.lines() {
+        let mut line_parts = line.split(';');
+        let head = line_parts.next().unwrap_or("");
 
-        let line_parts: Vec<_> = line.split(';').collect();
-
-        if line_parts[0].chars().any(|c| c == '�') {
-            errors.push(WordListError::InvalidWord(line_parts[0].into()));
+        if head.chars().any(|c| c == '\u{FFFD}') {
+            items.push(ParseItem::Error(WordListError::InvalidWord(head.into())));
             continue;
         }
 
-        let canonical = line_parts[0].trim().to_string();
-        let normalized = normalize_word(&canonical, normalization);
+        let canonical = head.trim();
+        let normalized = normalize_word(canonical, &normalization);
         if normalized.is_empty() {
-            continue;
-        }
-        if index.contains_key(&normalized) {
+            items.push(ParseItem::Skip);
             continue;
         }
 
-        let Ok(score) = (if line_parts.len() < 2 {
-            Ok(50)
-        } else {
-            line_parts[1].trim().parse::<u16>()
-        }) else {
-            errors.push(WordListError::InvalidScore(line_parts[1].into()));
-            continue;
-        };
-
-        index.insert(normalized.clone(), entries.len());
-        entries.push(RawWordListEntry {
+        items.push(ParseItem::Entry {
+            canonical,
             length: normalized.chars().count(),
             normalized,
-            canonical,
-            score,
+            raw_score: line_parts.next(),
         });
+    }
+}
+
+/// Split `s` into `count` roughly-equal chunks ending on line boundaries. Returns fewer than
+/// `count` chunks near the end of the input; never splits a line.
+fn line_chunks(s: &str, count: usize) -> Vec<&str> {
+    let bytes = s.as_bytes();
+    let mut chunks = Vec::with_capacity(count);
+    let mut start = 0;
+    for i in 1..count {
+        let target = bytes.len() * i / count;
+        if target <= start {
+            continue;
+        }
+        let end = bytes[target..]
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(bytes.len(), |offset| target + offset + 1);
+        chunks.push(&s[start..end.min(bytes.len())]);
+        start = end;
+        if start >= bytes.len() {
+            break;
+        }
+    }
+    chunks.push(&s[start..]);
+    chunks
+}
+
+fn parse_word_list_file_contents(
+    file_contents: &str,
+    normalization: Option<NormalizationSettings>,
+    index: &mut FastHashMap<String, usize>,
+    errors: &mut Vec<WordListError>,
+) -> Vec<RawWordListEntry> {
+    // Parse large files in parallel chunks; the chunk items keep exact file order and the merge
+    // below applies it, so entries, ids, and the error cap are byte-identical to sequential
+    // parsing. Small inputs stay on this thread.
+    const PARALLEL_THRESHOLD_BYTES: usize = 256 * 1024;
+
+    let line_count = file_contents.lines().count();
+    let mut entries: Vec<RawWordListEntry> = Vec::with_capacity(line_count);
+    index.reserve(line_count);
+
+    let worker_count = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(16);
+    let chunks = if file_contents.len() >= PARALLEL_THRESHOLD_BYTES && worker_count >= 2 {
+        line_chunks(file_contents, worker_count.max(2))
+    } else {
+        vec![file_contents]
+    };
+
+    let mut parsed: Vec<Vec<ParseItem>> = Vec::with_capacity(chunks.len());
+    if chunks.len() > 1 {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = chunks
+                .iter()
+                .map(|chunk| {
+                    scope.spawn(|| {
+                        let mut items = Vec::with_capacity(chunk.lines().count());
+                        parse_chunk(chunk, normalization, &mut items);
+                        items
+                    })
+                })
+                .collect();
+            for handle in handles {
+                parsed.push(handle.join().expect("parse worker panicked"));
+            }
+        });
+    } else {
+        let mut items = Vec::with_capacity(line_count);
+        parse_chunk(file_contents, normalization, &mut items);
+        parsed.push(items);
+    }
+
+    for items in parsed {
+        for item in items {
+            match item {
+                ParseItem::Skip => {}
+                ParseItem::Error(error) => {
+                    errors.push(error);
+                    if errors.len() > 100 {
+                        return entries;
+                    }
+                }
+                ParseItem::Entry {
+                    canonical,
+                    normalized,
+                    length,
+                    raw_score,
+                } => {
+                    if index.contains_key(&normalized) {
+                        continue;
+                    }
+
+                    let score = if let Some(raw) = raw_score {
+                        let Ok(score) = raw.trim().parse::<u16>() else {
+                            errors.push(WordListError::InvalidScore(raw.into()));
+                            if errors.len() > 100 {
+                                return entries;
+                            }
+                            continue;
+                        };
+                        score
+                    } else {
+                        50
+                    };
+
+                    index.insert(normalized.clone(), entries.len());
+                    entries.push(RawWordListEntry {
+                        length,
+                        normalized,
+                        canonical: canonical.to_string(),
+                        score,
+                    });
+                }
+            }
+        }
     }
 
     entries
@@ -331,14 +524,14 @@ fn read_file_tolerating_invalid_encoding(path: &OsString) -> Result<String, io::
 pub struct RawWordListContents {
     pub entries: Vec<RawWordListEntry>,
     pub fingerprint: Option<u64>,
-    pub index: HashMap<String, usize>,
+    pub index: FastHashMap<String, usize>,
     pub errors: Vec<WordListError>,
 }
 
 #[must_use]
 pub fn load_words_from_source(source: &WordListSourceConfig) -> RawWordListContents {
     let fingerprint = source.fingerprint();
-    let mut index = HashMap::new();
+    let mut index = FastHashMap::default();
     let mut errors = vec![];
 
     let entries = match &source.provider {
@@ -370,7 +563,7 @@ pub fn load_words_from_source(source: &WordListSourceConfig) -> RawWordListConte
             if let Ok(contents) = read_file_tolerating_invalid_encoding(path) {
                 parse_word_list_file_contents(
                     &contents,
-                    &source.normalization,
+                    source.normalization,
                     &mut index,
                     &mut errors,
                 )
@@ -381,7 +574,7 @@ pub fn load_words_from_source(source: &WordListSourceConfig) -> RawWordListConte
         }
 
         WordListSourceConfigProvider::FileContents { contents, .. } => {
-            parse_word_list_file_contents(contents, &source.normalization, &mut index, &mut errors)
+            parse_word_list_file_contents(contents, source.normalization, &mut index, &mut errors)
         }
     };
 
@@ -469,7 +662,7 @@ pub struct WordList {
     pub glyphs: Vec<char>,
 
     /// The inverse of `glyphs`: a map from a character to the `GlyphId` representing it.
-    pub glyph_id_by_char: HashMap<char, GlyphId>,
+    pub glyph_id_by_char: FastHashMap<char, GlyphId>,
 
     /// A list of all loaded words, bucketed by length. An index into `words` is the length of the
     /// words in the bucket, so `words[0]` is always an empty vec.
@@ -481,7 +674,7 @@ pub struct WordList {
     append_log: Vec<usize>,
 
     /// A map from a normalized string to the id of the Word representing it.
-    pub word_id_by_string: HashMap<String, WordId>,
+    pub word_id_by_string: FastHashMap<String, WordId>,
 
     /// A dupe index reflecting the max substring length provided when configuring the `WordList`.
     pub dupe_index: BoxedDupeIndex,
@@ -529,10 +722,10 @@ impl WordList {
     ) -> WordList {
         let mut instance = WordList {
             glyphs: vec![],
-            glyph_id_by_char: HashMap::new(),
+            glyph_id_by_char: FastHashMap::default(),
             words: vec![vec![]],
             append_log: vec![],
-            word_id_by_string: HashMap::new(),
+            word_id_by_string: FastHashMap::default(),
             dupe_index: WordList::instantiate_dupe_index(max_shared_substring),
             exempt_preferred_dupes: false,
             max_length,
@@ -752,11 +945,7 @@ impl WordList {
             canonical_string: raw_entry.canonical.clone(),
             glyphs,
             score: raw_entry.score,
-            letter_score: raw_entry
-                .normalized
-                .chars()
-                .map(|char| LETTER_POINTS.get(&char).copied().unwrap_or(3))
-                .sum(),
+            letter_score: raw_entry.normalized.chars().map(letter_points).sum(),
             hidden,
             source_index,
             personal_word_score: if self
@@ -909,8 +1098,10 @@ impl WordList {
         mut add_word: impl FnMut(&mut WordList, &RawWordListEntry, u16),
         mut handle_disabled_personal_entry: impl FnMut(&mut WordList, &RawWordListEntry),
     ) {
+        // The cross-source dedupe keys on the full 64-bit hash of the normalized string alone,
+        // so collisions silently drop words; keep the strong SipHash here (one hash per word).
         fn hash_str(str: &str) -> u64 {
-            let mut hasher = DefaultHasher::new();
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
             str.hash(&mut hasher);
             hasher.finish()
         }
@@ -922,7 +1113,14 @@ impl WordList {
             "Too many word list sources"
         );
 
+        let total_entries: usize = source_configs
+            .iter()
+            .filter_map(|source| source_states.get(&source.id))
+            .map(|state| state.entries.len())
+            .sum();
         let mut seen_words: HashSet<u64> = HashSet::new();
+        seen_words.reserve(total_entries);
+        self.word_id_by_string.reserve(total_entries);
 
         for (source_index, source) in source_configs.iter().enumerate() {
             let is_personal_list = self
