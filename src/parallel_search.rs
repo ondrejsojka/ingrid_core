@@ -238,6 +238,16 @@ fn adaptive_branching_threshold_for_worker(worker_id: u64, worker_count: usize) 
     ADAPTIVE_BRANCHING_THRESHOLD * (2.0 / 3.0) * (1.0 + fraction)
 }
 
+/// Number of workers dedicated to the frontier target — the smallest count that would
+/// improve the incumbent — once the initial target spread has been consumed. All-but-one
+/// workers swarm the frontier with distinct rng streams so the first improving fill (or
+/// the infeasibility proof of an impossible frontier) arrives as early as any stream can
+/// produce it; the remaining workers keep probing unrepresented targets for bounds
+/// collapse and leapfrog fills.
+fn frontier_worker_quota(worker_count: usize) -> usize {
+    worker_count.saturating_sub(1).max(1)
+}
+
 fn viable_bounds(
     best: Option<&PreferredFillSuccess>,
     impossible_from: usize,
@@ -309,9 +319,12 @@ pub fn prepare_search(config: &GridConfig) -> Result<PreparedSearch, FillFailure
 /// One worker starts at zero to establish a baseline fill quickly; the rest start at evenly
 /// distributed preferred-word minima. A success at `N` cancels every worker whose minimum is at
 /// most the success's actual preferred count, while harder workers keep running. A hard failure at
-/// `N` symmetrically cancels minima at least `N`. A freed core first targets one more than the
-/// incumbent to guarantee incremental anytime progress; remaining cores bisect unexplored target
-/// gaps and, once every distinct target is represented, run independent RNG streams.
+/// `N` symmetrically cancels minima at least `N`. Once the initial spread is consumed, all-but-one
+/// freed cores swarm the frontier — one more than the incumbent — with independent RNG streams to
+/// guarantee incremental anytime progress as early as possible; the remaining cores bisect
+/// unexplored target gaps and, once every distinct target is represented, run duplicate RNG
+/// streams. Each incumbent improvement keeps only a small reserve of the highest-target gap
+/// probes and cancels the rest so they rejoin the new frontier swarm.
 pub fn find_best_fill(
     config: &GridConfig,
     prepared: &PreparedSearch,
@@ -438,11 +451,22 @@ fn find_best_fill_internal(
                             break Some(target);
                         }
                     };
+                    let frontier_workers = active
+                        .values()
+                        .filter(|worker| {
+                            !worker.abort.load(Ordering::Relaxed)
+                                && worker.minimum_preferred_words == lower
+                        })
+                        .count();
                     let target = queued_target
-                        // Always keep one worker on the smallest count that would improve the
-                        // incumbent. This produces steady anytime progress while the remaining
-                        // workers continue probing harder, distributed targets.
-                        .or_else(|| (!represented.contains(&lower)).then_some(lower))
+                        // Swarm the frontier with up to `frontier_worker_quota` workers so the
+                        // smallest improving count is attempted from many independent rng
+                        // streams at once. The remaining workers bisect unexplored gaps and,
+                        // once every distinct target is represented, run duplicate streams.
+                        .or_else(|| {
+                            (frontier_workers < frontier_worker_quota(worker_count))
+                                .then_some(lower)
+                        })
                         .or_else(|| next_unrepresented_target(lower, upper, &represented))
                         .or_else(|| duplicate_target(lower, upper, &active));
                     let Some(target) = target else {
@@ -554,6 +578,31 @@ fn find_best_fill_internal(
                                     best.certified_fills.insert(fill_key);
                                 }
                                 cancel_matching(&active, |target| target <= preferred_word_count);
+                                if incumbent_improved {
+                                    // Retarget stale gap probes onto the new frontier: the
+                                    // swarm below cancelled with the old incumbent, so keep
+                                    // only a small reserve of the highest-target probes
+                                    // running for bounds collapse and free the rest to
+                                    // respawn on the new frontier.
+                                    let spread_quota =
+                                        worker_count - frontier_worker_quota(worker_count);
+                                    let mut probes = active
+                                        .iter()
+                                        .filter(|(_, worker)| {
+                                            !worker.abort.load(Ordering::Relaxed)
+                                                && worker.minimum_preferred_words
+                                                    > preferred_word_count
+                                        })
+                                        .map(|(id, worker)| (worker.minimum_preferred_words, *id))
+                                        .collect::<Vec<_>>();
+                                    probes.sort_unstable();
+                                    let cancel_count = probes.len().saturating_sub(spread_quota);
+                                    for (_, probe_id) in probes.into_iter().take(cancel_count) {
+                                        if let Some(probe) = active.get(&probe_id) {
+                                            probe.abort.store(true, Ordering::Relaxed);
+                                        }
+                                    }
+                                }
 
                                 emit_search_event(
                                     &mut observer,
