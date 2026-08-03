@@ -20,6 +20,7 @@ use crate::grid_config::{Crossing, CrossingId, GridConfig, SlotConfig, SlotId};
 use crate::types::WordId;
 use crate::util::{build_glyph_counts_by_cell, GlyphCountsByCell};
 use crate::word_list::WordList;
+use crate::MAX_SLOT_LENGTH;
 
 /// Structure for tracking words eliminated from a given slot while establishing arc consistency.
 #[derive(Debug)]
@@ -140,6 +141,15 @@ struct ArcConsistencySlotState<'a> {
     /// options from the crossing entry.
     queued_cell_idxs: Option<Vec<usize>>,
 
+    /// A bitmask tracking which cell indices are present in `queued_cell_idxs`, so that we can
+    /// deduplicate enqueues in constant time. Bit `i` is set iff cell `i` is queued. Reset to 0
+    /// whenever the cells are taken by the propagation loop.
+    queued_cell_mask: u32,
+
+    /// This slot's position in `queued_slot_ids`, or `u32::MAX` when it has no queued cells.
+    /// Lets the propagation loop swap-remove the slot from that list in constant time.
+    queued_list_pos: u32,
+
     /// Do we need to do singleton propagation (e.g., uniqueness checks) from this slot? This can
     /// only be true if the slot has exactly one entry and we've never done this propagation from
     /// it.
@@ -203,6 +213,11 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
         .zip(elimination_sets.iter_mut())
         .map(|(slot_config, elimination_set)| {
             elimination_set.reset_eliminations();
+            assert!(
+                slot_config.length <= 32,
+                "slot length {} exceeds the 32-bit queued-cell bitmask capacity (MAX_SLOT_LENGTH is {MAX_SLOT_LENGTH})",
+                slot_config.length,
+            );
             ArcConsistencySlotState {
                 slot_id: slot_config.id,
                 eliminations: elimination_set,
@@ -210,10 +225,20 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                 option_count: initial_option_counts[slot_config.id],
                 glyph_counts_by_cell: None,
                 queued_cell_idxs: None,
+                queued_cell_mask: 0,
+                queued_list_pos: u32::MAX,
                 needs_singleton_propagation: false,
             }
         })
         .collect();
+
+    // Compact list of the slots that currently have queued cells to propagate from, kept in sync
+    // with the `queued_cell_idxs`/`queued_list_pos` fields in `slot_states`. The propagation
+    // loop scans this list to find the minimum `dom/wdeg` key instead of rescanning every slot
+    // in the grid at every step; the scan computes LIVE priorities, so selection is exactly
+    // equivalent to `min_by_key` over all slots in ascending id order (with the tie broken by
+    // lowest slot id, which the `(priority, slot_id)` comparison enforces).
+    let mut queued_slot_ids: Vec<SlotId> = Vec::new();
 
     // If we were given an `evaluating_slot`, we can assume that the rest of the grid is fully
     // arc-consistent and start by just queueing the cells of this slot. Otherwise, we want to
@@ -231,21 +256,25 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
         }
 
         // Queue all cells that have a crossing with a non-fixed slot.
-        slot_states[slot_id].queued_cell_idxs = Some(
-            config.slot_configs[slot_id]
-                .crossings
-                .iter()
-                .enumerate()
-                .filter(|(_, crossing_opt)| {
-                    if let Some(crossing) = crossing_opt {
-                        !fixed_slots[crossing.other_slot_id]
-                    } else {
-                        false
-                    }
-                })
-                .map(|(cell_idx, _)| cell_idx)
-                .collect(),
-        );
+        let queued_cell_idxs: Vec<usize> = config.slot_configs[slot_id]
+            .crossings
+            .iter()
+            .enumerate()
+            .filter(|(_, crossing_opt)| {
+                if let Some(crossing) = crossing_opt {
+                    !fixed_slots[crossing.other_slot_id]
+                } else {
+                    false
+                }
+            })
+            .map(|(cell_idx, _)| cell_idx)
+            .collect();
+        slot_states[slot_id].queued_cell_mask = queued_cell_idxs
+            .iter()
+            .fold(0u32, |mask, &cell_idx| mask | (1 << cell_idx));
+        slot_states[slot_id].queued_cell_idxs = Some(queued_cell_idxs);
+        slot_states[slot_id].queued_list_pos = queued_slot_ids.len() as u32;
+        queued_slot_ids.push(slot_id);
 
         // If this slot has a single option, we also want to remove dupes from other slots.
         if slot_states[slot_id].option_count == 1 {
@@ -266,6 +295,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
     // Whenever we eliminate an option from a slot, we need to do some bookkeeping and potentially
     // enqueue cells from that slot for further propagation.
     let eliminate_word = |slot_states: &mut [ArcConsistencySlotState],
+                          queued_slot_ids: &mut Vec<SlotId>,
                           slot_id: SlotId,
                           word_id: WordId,
                           blamed_cell_idx: Option<usize>|
@@ -290,15 +320,6 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                     .enumerate()
                     .filter_map(|(cell_idx, crossing)| {
                         crossing.as_ref().map(|crossing| {
-                            // We'll increment the weight of each constraint affecting this slot
-                            // by the number of options it removed divided by the number of
-                            // options we started with (IOW, the percentage of the slot's
-                            // options that were removed by this constraint).
-                            //
-                            // You could argue that we should also track things like uniqueness
-                            // constraints here, but this would add a lot of extra work to
-                            // calculating slot weights since we'd have to check every slot in
-                            // the grid pairwise every time, so it doesn't really seem worth it.
                             (
                                 crossing.crossing_id,
                                 (slot_states[slot_id].blame_counts[cell_idx] as f32)
@@ -353,10 +374,14 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                     if slot_states[slot_id].queued_cell_idxs.is_none() {
                         slot_states[slot_id].queued_cell_idxs =
                             Some(Vec::with_capacity(slot_config.length));
+                        slot_states[slot_id].queued_list_pos = queued_slot_ids.len() as u32;
+                        queued_slot_ids.push(slot_id);
                     }
                     let queued_cell_idxs = slot_states[slot_id].queued_cell_idxs.as_mut().unwrap();
 
-                    if !queued_cell_idxs.contains(&cell_idx) {
+                    let cell_mask_bit = 1u32 << cell_idx;
+                    if slot_states[slot_id].queued_cell_mask & cell_mask_bit == 0 {
+                        slot_states[slot_id].queued_cell_mask |= cell_mask_bit;
                         queued_cell_idxs.push(cell_idx);
                     }
                 }
@@ -385,20 +410,43 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
     loop {
         // First, run the AC-3 algorithm, propagating eliminations until the queue is empty.
         loop {
-            // Identify the queued slot with the lowest `dom/wdeg`, based on our live domain sizes.
-            let slot_id = (0..config.slot_configs.len())
-                .filter(|&slot_id| slot_states[slot_id].queued_cell_idxs.is_some())
-                .min_by_key(|&slot_id| {
-                    FloatOrd((slot_states[slot_id].option_count as f32) / slot_weights[slot_id])
-                });
+            // Identify the queued slot with the lowest `dom/wdeg`, based on our live domain
+            // sizes, by scanning only the slots that actually have queued cells. Ties are
+            // broken by lowest slot id, exactly like `min_by_key` over all slots in ascending
+            // id order.
+            let min_entry = queued_slot_ids
+                .iter()
+                .copied()
+                .map(|slot_id| {
+                    (
+                        FloatOrd(
+                            (slot_states[slot_id].option_count as f32) / slot_weights[slot_id],
+                        ),
+                        slot_id,
+                    )
+                })
+                .min();
 
             // If there are no queued slots left, we're done with this AC pass.
-            let Some(slot_id) = slot_id else {
+            let Some((_, slot_id)) = min_entry else {
                 break;
             };
 
             // We want to examine the slot's cells in descending order of crossing weight.
             let mut cell_idxs = slot_states[slot_id].queued_cell_idxs.take().unwrap();
+            slot_states[slot_id].queued_cell_mask = 0;
+
+            // Remove the slot from the queued list (swap-remove via its recorded position):
+            // the last element moves into the vacated position and needs its recorded
+            // position updated.
+            let pos = slot_states[slot_id].queued_list_pos as usize;
+            slot_states[slot_id].queued_list_pos = u32::MAX;
+            let last_pos = queued_slot_ids.len() - 1;
+            queued_slot_ids.swap_remove(pos);
+            if pos != last_pos {
+                let moved_slot_id = queued_slot_ids[pos];
+                slot_states[moved_slot_id].queued_list_pos = pos as u32;
+            }
             cell_idxs.sort_by_cached_key(|&cell_idx| {
                 let crossing_id = config.slot_configs[slot_id].crossings[cell_idx]
                     .as_ref()
@@ -443,6 +491,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                     if number_of_matching_options == 0 {
                         eliminate_word(
                             &mut slot_states,
+                            &mut queued_slot_ids,
                             other_slot_id,
                             slot_option_word_id,
                             Some(other_slot_cell),
@@ -487,7 +536,13 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                             && dupe_ids.contains(&word_id)
                             && !slot_states[other_slot_id].eliminations.contains(word_id)
                         {
-                            eliminate_word(&mut slot_states, other_slot_id, word_id, None)?;
+                            eliminate_word(
+                                &mut slot_states,
+                                &mut queued_slot_ids,
+                                other_slot_id,
+                                word_id,
+                                None,
+                            )?;
                         }
                     }
                 }
