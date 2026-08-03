@@ -46,6 +46,20 @@ write+glue, ~20% allocator churn, ~15% unicode normalization iterators, ~8% pars
 - `src/word_list.rs` — chunked parallel parse, hasher swaps, ASCII fast path, presizing.
 - `src/bin.rs` — 3 trivial clone->deref adjustments (NormalizationSettings became Copy).
 
+## Correction: the hasher swap was load-negative, removed (same-day ablation)
+
+The bundle shipped `FastHasher`, a hand-rolled FxHash-style rotate-multiply hasher, on the
+Eq-checked maps. An isolated same-day ablation (serve `load_ms`, 10 paired interleaved
+rounds, 160k-word dictionary) showed it was NOT a contributor: FastHasher median 1308 ms
+vs a std-`RandomState` revert 960 ms — no gain, trend reversed (p_slower = 0.065,
+cross-pair U = 30/100). Separately, the reviewer caught that 3 exact 64-bit collisions in
+160k words are ~4e9x the ideal-hash expectation (6.9e-10): multiply-only mixing with no
+finalization cannot propagate top-chunk-byte differences downward (mod-2^64 truncation
+leaves ~4 live bits), and Czech words share long prefixes whose differences land in the
+last chunk byte. The collisions never threatened correctness (Eq resolves them), but they
+never paid for themselves either. FastHasher was REMOVED from local main; the win reported
+above comes from the parallel parse + normalization fast path alone.
+
 ## Why 37.6% and not more
 
 Remaining wall is the sequential merge (`add_word_silent`: glyph encode + string clones +
