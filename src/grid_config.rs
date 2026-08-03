@@ -5,7 +5,7 @@ use fancy_regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 #[cfg(feature = "serde")]
 use serde_derive::{Deserialize, Serialize};
@@ -135,6 +135,12 @@ pub struct GridConfig<'a> {
     /// and the existing letters filled into the grid.
     pub slot_options: &'a [Vec<WordId>],
 
+    /// Lazily built index from (slot, cell, glyph) to the slot's options carrying that glyph in
+    /// that cell, used by arc consistency to touch only the options affected by a glyph losing
+    /// support. Shared with the owning `OwnedGridConfig`, so the first arc-consistency pass for a
+    /// grid builds it once and every subsequent pass (on any thread) reuses it.
+    pub support_index: &'a OnceLock<SupportIndex>,
+
     /// The width and height of the grid.
     pub width: usize,
     pub height: usize,
@@ -163,6 +169,8 @@ pub struct OwnedGridConfig<'a> {
     pub height: usize,
     pub crossing_count: usize,
     pub abort: Option<Arc<AtomicBool>>,
+    /// Lazily built arc-consistency support index; see `GridConfig::support_index`.
+    pub support_index: OnceLock<SupportIndex>,
 }
 
 impl OwnedGridConfig<'_> {
@@ -174,6 +182,7 @@ impl OwnedGridConfig<'_> {
             fill: &self.fill,
             slot_configs: &self.slot_configs,
             slot_options: &self.slot_options,
+            support_index: &self.support_index,
             width: self.width,
             height: self.height,
             crossing_count: self.crossing_count,
@@ -242,6 +251,83 @@ pub fn sort_slot_options(
             )
         });
     }
+}
+
+/// A static index from each (slot, cell, glyph) to the slot's options that carry that glyph in
+/// that cell. Arc consistency uses this to revise a crossing in time proportional to the options
+/// actually affected by a glyph losing support, rather than rescanning the crossing slot's whole
+/// option list for every queued cell.
+pub struct SupportIndex {
+    /// `by_slot[slot_id][cell_idx]` is populated iff the cell participates in a crossing; cells
+    /// without crossings are never queued for propagation and need no index.
+    by_slot: Vec<Vec<Option<CellSupport>>>,
+}
+
+/// The option buckets for one (slot, cell) pair, laid out as contiguous ranges of `words`.
+pub struct CellSupport {
+    /// Bucket boundaries by `GlyphId`: bucket `g` spans `words[offsets[g]..offsets[g + 1]]`.
+    offsets: Vec<u32>,
+    /// All of the slot's options, grouped by the glyph they carry in the indexed cell.
+    words: Vec<WordId>,
+}
+
+impl SupportIndex {
+    /// Access the support buckets for a cell that participates in a crossing.
+    pub(crate) fn cell_support(&self, slot_id: SlotId, cell_idx: usize) -> &CellSupport {
+        self.by_slot[slot_id][cell_idx]
+            .as_ref()
+            .expect("support index covers every cell that has a crossing")
+    }
+}
+
+impl CellSupport {
+    /// The options carrying `glyph_id` in the indexed cell.
+    pub(crate) fn words_for_glyph(&self, glyph_id: GlyphId) -> &[WordId] {
+        &self.words[self.offsets[glyph_id] as usize..self.offsets[glyph_id + 1] as usize]
+    }
+}
+
+/// Build the [`SupportIndex`] for a grid config: a counting sort of each slot's options by the
+/// glyph they carry in each crossing cell.
+#[must_use]
+pub fn build_support_index(config: &GridConfig<'_>) -> SupportIndex {
+    let glyph_count = config.word_list.glyphs.len();
+    let by_slot = config
+        .slot_configs
+        .iter()
+        .map(|slot_config| {
+            let slot_options = &config.slot_options[slot_config.id];
+            slot_config
+                .crossings
+                .iter()
+                .enumerate()
+                .map(|(cell_idx, crossing)| {
+                    crossing.as_ref().map(|_| {
+                        let words_by_length = &config.word_list.words[slot_config.length];
+
+                        let mut offsets = vec![0u32; glyph_count + 1];
+                        for &word_id in slot_options {
+                            offsets[words_by_length[word_id].glyphs[cell_idx] + 1] += 1;
+                        }
+                        for idx in 1..=glyph_count {
+                            offsets[idx] += offsets[idx - 1];
+                        }
+
+                        let mut words = vec![0; slot_options.len()];
+                        let mut write_positions = offsets.clone();
+                        for &word_id in slot_options {
+                            let glyph = words_by_length[word_id].glyphs[cell_idx];
+                            words[write_positions[glyph] as usize] = word_id;
+                            write_positions[glyph] += 1;
+                        }
+
+                        CellSupport { offsets, words }
+                    })
+                })
+                .collect()
+        })
+        .collect();
+    SupportIndex { by_slot }
 }
 
 /// A struct identifying a specific slot in the grid.
@@ -768,6 +854,7 @@ pub fn generate_grid_config<'a>(
         height,
         crossing_count,
         abort: None,
+        support_index: OnceLock::new(),
     }
 }
 

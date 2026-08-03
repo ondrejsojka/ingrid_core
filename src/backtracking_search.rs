@@ -1384,10 +1384,10 @@ mod tests {
                 indoc! {"
                 .ass...
                 .glia..
-                glamper
+                blameme
                 retinas
                 reelers
-                ..sean.
+                ..seat.
                 ...sss.
                 "}
                 .trim()
