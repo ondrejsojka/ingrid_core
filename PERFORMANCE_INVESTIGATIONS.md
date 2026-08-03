@@ -69,6 +69,18 @@ Reading of the profile + code:
 - `glyph_count_refs` — `ArcConsistencyAdapter::get_glyph_counts` clones ~1KB per call per
   revised slot; make it borrowed.
 
+### Round 4 candidates
+
+- `glyph_count_refs` — `ArcConsistencyAdapter::get_glyph_counts` clones ~1KB
+  (len × ~30 glyphs) per lazily-fetched slot per AC pass; make it borrowed (Cow/enum-ref
+  over fixed vs live counts).
+- `slot_loop_allocs` — per-iteration Vec allocations in the fill loop: `calculate_slot_weights`,
+  `choose_next_slot`'s collected+sorted ids, and per-`maintain_arc_consistency`
+  `remaining_option_counts` + `fixed_slots`. Hoist to reused buffers threaded from the
+  caller.
+- `time_to_proof_workload` — add a benchmark workload tracking time-to-PROVEN-optimal
+  (`--timeout 0`) so proof-tail regressions are visible, not just time-to-target wins.
+
 ## Round log
 
 ### Round 1 (2026-08-02) — 2 candidates, BOTH KEEP after protocol correction
@@ -90,11 +102,20 @@ and sign test; KEEP gate is p_faster <= 0.05, secondary regression gate p_slower
 The skill's measurement-protocol.md and optimizer-worker.md were updated generically.
 Workers must use the comparator's `paired` block, not bare U, for verdicts from now on.
 
-### Round 2 candidates
+### Round 2/3 (2026-08-02) — 3 candidates, 3 KEEP (one via transcript salvage)
 
-- `bitset_domains` — replace 16B/word dense eliminations with compact per-length-domain
-  representation (bitset + u8 blame or equivalent): fork/clone collapse, cache locality
-  for `is_word_eliminated` in AC. Must reproduce identical same-seed event streams.
-- `wordlist_build_parallel` — dictionary load ~4.3s constant per CLI run: profile the
-  load+config build and parallelize/cheapen (normalization, glyph encode, dupe index,
-  sort_slot_options). Visible on s2_fast_wall and every real invocation.
+- `wordlist_build_parallel` — KEEP. s2_fast_wall median -37.6% (10/10 wins, p=0.00098);
+  P neutral. Parallel chunk parse + FxHash on Eq-checked maps + ASCII normalize fast path.
+  Report: docs/perf_investigations/wordlist_build_parallel.md. (Do NOT swap SipHash where
+  the hash value is the identity — FxHash collides on short structured words; 3 real
+  collisions found in the Czech corpus.)
+- `bitset_domains` — KEEP via TRANSCRIPT SALVAGE (worker killed by provider outage after
+  measuring primary p=0.00195 but before secondaries/patch). Recovered edits verbatim,
+  orchestrator re-tested + re-measured: primary p=0.0322 (8/10), s1 p=0.00098 (10/10,
+  -39%), s2 neutral, semantics bit-identical at cores 1. Report: docs/perf_investigations/bitset_domains.md.
+- `scheduler_frontier_focus` — KEEP. Primary median -63% (p=0.0049, 8/10); s1 -59%, s2
+  neutral. Baseline flaw exposed by search logs: 9/10 initial-spread probes at targets
+  14..61 never terminated inside the 120s timeout — the climb ran on one core. All-but-one
+  workers now swarm the frontier and retarget on every improvement. Report:
+  docs/perf_investigations/scheduler_frontier_focus.md.
+- Campaign verification (r0 baseline vs r3 HEAD): see local logs (campaign_r0_r3).
