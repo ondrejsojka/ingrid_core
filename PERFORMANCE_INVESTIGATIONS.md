@@ -72,8 +72,8 @@ Reading of the profile + code:
 ### Round 4 candidates
 
 - `glyph_count_refs` — `ArcConsistencyAdapter::get_glyph_counts` clones ~1KB
-  (len × ~30 glyphs) per lazily-fetched slot per AC pass; make it borrowed (Cow/enum-ref
-  over fixed vs live counts).
+  (len × ~30 glyphs as `Vec<Vec<u32>>`, i.e. ~9 heap allocations) per lazily-fetched
+  slot per AC pass; make it borrowed or restructure the counts type.
 - `slot_loop_allocs` — per-iteration Vec allocations in the fill loop: `calculate_slot_weights`,
   `choose_next_slot`'s collected+sorted ids, and per-`maintain_arc_consistency`
   `remaining_option_counts` + `fixed_slots`. Hoist to reused buffers threaded from the
@@ -105,7 +105,8 @@ Workers must use the comparator's `paired` block, not bare U, for verdicts from 
 ### Round 2/3 (2026-08-02) — 3 candidates, 3 KEEP (one via transcript salvage)
 
 - `wordlist_build_parallel` — KEEP. s2_fast_wall median -37.6% (10/10 wins, p=0.00098);
-  P neutral. Parallel chunk parse + FxHash on Eq-checked maps + ASCII normalize fast path.
+  P neutral. Parallel chunk parse + ASCII normalize fast path; its FxHash swap was later
+  isolated-measured NEGATIVE and removed (see NEGATIVE entry below).
   Report: docs/perf_investigations/wordlist_build_parallel.md. (Do NOT swap SipHash where
   the hash value is the identity — FxHash collides on short structured words; 3 real
   collisions found in the Czech corpus.)
@@ -119,3 +120,11 @@ Workers must use the comparator's `paired` block, not bare U, for verdicts from 
   workers now swarm the frontier and retarget on every improvement. Report:
   docs/perf_investigations/scheduler_frontier_focus.md.
 - Campaign verification (r0 baseline vs r3 HEAD): see local logs (campaign_r0_r3).
+- **Cumulative verification** (r0 -> r3 HEAD, primary, 10 paired rounds): unpaired medians
+  9664 -> 1262 ms (-86.9%), paired median ratio 0.224, 9/10 wins, Wilcoxon p=0.0029.
+- **NEGATIVE (do not retry): hand-rolled FxHash-style hasher on short Czech keys.** Shipped
+  inside wordlist_build_parallel; isolated ablation (serve load_ms, 10 paired rounds):
+  1308 vs 960 ms for a std-RandomState revert — no gain, trend reversed. Plus 3 exact
+  64-bit collisions in the corpus (6.9e-10 ideal expectation) from multiply-only mixing
+  without finalization. Removed from main same-day; the wordlist win is the parallel
+  parse + ASCII normalization fast path.
