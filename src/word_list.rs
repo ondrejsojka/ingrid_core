@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::Debug;
 use std::fs::File;
-use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::{fmt, fs, io, mem};
 use unicode_categories::UnicodeCategories;
@@ -13,67 +13,6 @@ use unicode_normalization::UnicodeNormalization;
 use crate::dupe_index::{AnyDupeIndex, BoxedDupeIndex, DupeIndex};
 use crate::types::{GlobalWordId, GlyphId, WordId};
 use crate::MAX_SLOT_LENGTH;
-
-/// A fast, non-cryptographic hasher (FxHash-style rotate-multiply) for the internal word-list
-/// maps. Loading a dictionary hashes every word several times, and the std `SipHash` dominates
-/// that phase; these maps are keyed by dictionary content, not adversarial input.
-#[derive(Clone, Default)]
-pub struct FastHasher(u64);
-
-impl FastHasher {
-    const MULT: u64 = 0x517c_c1b7_2722_0a95;
-
-    #[inline]
-    fn add(&mut self, word: u64) {
-        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(Self::MULT);
-    }
-}
-
-impl Hasher for FastHasher {
-    #[inline]
-    fn write(&mut self, bytes: &[u8]) {
-        let mut chunks = bytes.chunks_exact(8);
-        for chunk in &mut chunks {
-            self.add(u64::from_le_bytes(chunk.try_into().unwrap()));
-        }
-        let remainder = chunks.remainder();
-        if !remainder.is_empty() {
-            let mut padded = [0u8; 8];
-            padded[..remainder.len()].copy_from_slice(remainder);
-            self.add(u64::from_le_bytes(padded));
-        }
-    }
-
-    #[inline]
-    fn write_u8(&mut self, value: u8) {
-        self.add(u64::from(value));
-    }
-
-    #[inline]
-    fn write_u32(&mut self, value: u32) {
-        self.add(u64::from(value));
-    }
-
-    #[inline]
-    fn write_u64(&mut self, value: u64) {
-        self.add(value);
-    }
-
-    #[inline]
-    fn write_usize(&mut self, value: usize) {
-        self.add(value as u64);
-    }
-
-    #[inline]
-    fn finish(&self) -> u64 {
-        self.0
-    }
-}
-
-/// Build-hasher type used by all hot word-list maps.
-pub type FastBuildHasher = BuildHasherDefault<FastHasher>;
-/// `HashMap` using the fast word-list hasher.
-pub type FastHashMap<K, V> = HashMap<K, V, FastBuildHasher>;
 
 /// Completely arbitrary mapping from letter to point value.
 #[inline]
@@ -297,7 +236,7 @@ pub struct WordListSourceState {
     pub id: String,
     pub entries: Vec<RawWordListEntry>,
     pub fingerprint: Option<u64>,
-    pub index: FastHashMap<String, usize>,
+    pub index: HashMap<String, usize>,
     pub errors: Vec<WordListError>,
     pub pending_updates: HashMap<String, PendingWordListUpdate>,
 }
@@ -422,7 +361,7 @@ fn line_chunks(s: &str, count: usize) -> Vec<&str> {
 fn parse_word_list_file_contents(
     file_contents: &str,
     normalization: Option<NormalizationSettings>,
-    index: &mut FastHashMap<String, usize>,
+    index: &mut HashMap<String, usize>,
     errors: &mut Vec<WordListError>,
 ) -> Vec<RawWordListEntry> {
     // Parse large files in parallel chunks; the chunk items keep exact file order and the merge
@@ -524,14 +463,14 @@ fn read_file_tolerating_invalid_encoding(path: &OsString) -> Result<String, io::
 pub struct RawWordListContents {
     pub entries: Vec<RawWordListEntry>,
     pub fingerprint: Option<u64>,
-    pub index: FastHashMap<String, usize>,
+    pub index: HashMap<String, usize>,
     pub errors: Vec<WordListError>,
 }
 
 #[must_use]
 pub fn load_words_from_source(source: &WordListSourceConfig) -> RawWordListContents {
     let fingerprint = source.fingerprint();
-    let mut index = FastHashMap::default();
+    let mut index = HashMap::new();
     let mut errors = vec![];
 
     let entries = match &source.provider {
@@ -662,7 +601,7 @@ pub struct WordList {
     pub glyphs: Vec<char>,
 
     /// The inverse of `glyphs`: a map from a character to the `GlyphId` representing it.
-    pub glyph_id_by_char: FastHashMap<char, GlyphId>,
+    pub glyph_id_by_char: HashMap<char, GlyphId>,
 
     /// A list of all loaded words, bucketed by length. An index into `words` is the length of the
     /// words in the bucket, so `words[0]` is always an empty vec.
@@ -674,7 +613,7 @@ pub struct WordList {
     append_log: Vec<usize>,
 
     /// A map from a normalized string to the id of the Word representing it.
-    pub word_id_by_string: FastHashMap<String, WordId>,
+    pub word_id_by_string: HashMap<String, WordId>,
 
     /// A dupe index reflecting the max substring length provided when configuring the `WordList`.
     pub dupe_index: BoxedDupeIndex,
@@ -722,10 +661,10 @@ impl WordList {
     ) -> WordList {
         let mut instance = WordList {
             glyphs: vec![],
-            glyph_id_by_char: FastHashMap::default(),
+            glyph_id_by_char: HashMap::new(),
             words: vec![vec![]],
             append_log: vec![],
-            word_id_by_string: FastHashMap::default(),
+            word_id_by_string: HashMap::new(),
             dupe_index: WordList::instantiate_dupe_index(max_shared_substring),
             exempt_preferred_dupes: false,
             max_length,
