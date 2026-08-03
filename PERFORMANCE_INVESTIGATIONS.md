@@ -102,6 +102,36 @@ and sign test; KEEP gate is p_faster <= 0.05, secondary regression gate p_slower
 The skill's measurement-protocol.md and optimizer-worker.md were updated generically.
 Workers must use the comparator's `paired` block, not bare U, for verdicts from now on.
 
+### Round 4 (2026-08-02) — both DISCARD (mechanically correct, measured neutral)
+
+- `glyph_count_refs` — DISCARD. Flat Vec<u32> + copy-on-write borrow implemented and
+  semantics PROVEN identical (3 seeds), but primary p_faster=0.46 — the clone is below
+  the noise floor post-round-1. Report: docs/perf_investigations/glyph_count_refs.md.
+- `slot_loop_allocs` — DISCARD. SearchScratch hoisting done, determinism byte-identical,
+  p_faster~=0.5. glibc malloc arenas already make these allocations cheap at 10 workers.
+  Report: docs/perf_investigations/slot_loop_allocs.md.
+- Lesson: malloc/allocation-symbol-free profiles mean allocation hypotheses need a fresh
+  allocation-specific profile first; following rounds went algorithmic.
+
+### Round 5 (2026-08-02) — 1 KEEP, 1 DISCARD
+
+- `support_index` — KEEP. CSR per-(slot,cell,glyph)->options; revision touches dead
+  buckets only. Primary 10/10 wins (p=0.00098), -33.9% time-to-6; initial AC ~4x. Report:
+  docs/perf_investigations/support_index.md.
+- `dupe_prop_borrowed` — DISCARD. Mechanism verified (SipHash 9.7%->0.04% self) but
+  aggregate neutral on time-to-6 (singleton phase fires too rarely on P). Do not retry
+  without a dupe-heavy workload. Report: docs/perf_investigations/dupe_prop_borrowed.md.
+- Metric update: K=8 calibration at HEAD reachable on both probed seeds (4.2s, 37.6s);
+  **primary metric moves to target:8 from round 6** (time-to-6 compressed to ~1s floor).
+
+### Round 6 candidates
+
+- `cross_worker_weight_sharing` — portfolio-style sharing of dom/wdeg crossing-weight
+  signals between parallel workers (lock-free atomic array, periodic merge/pull).
+  Heuristic-only values => zero semantics risk; trajectories judged by bench only.
+- `dynamic_value_ordering` — replace static top-3 candidate ranking with crossing-support
+  -aware value ordering (fail-first on rare glyphs) in the word-candidate choice.
+
 ### Round 2/3 (2026-08-02) — 3 candidates, 3 KEEP (one via transcript salvage)
 
 - `wordlist_build_parallel` — KEEP. s2_fast_wall median -37.6% (10/10 wins, p=0.00098);
