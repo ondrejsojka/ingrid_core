@@ -10,7 +10,8 @@ use std::time::Duration;
 use crate::arc_consistency::EliminationSet;
 use crate::backtracking_search::{
     calculate_slot_priority, calculate_slot_weights, can_satisfy_minimum_preferred_words,
-    maintain_arc_consistency, ArcConsistencyMode, FillFailure, Slot,
+    maintain_arc_consistency, ArcConsistencyMode, FillFailure, Slot, LIVE_WORD,
+    MAX_ENCODED_SLOT_ID,
 };
 use crate::grid_config::{Choice, GridConfig, SlotId};
 use crate::types::WordId;
@@ -141,7 +142,7 @@ impl LiveSearchState {
             config.slot_options[slot_id]
                 .iter()
                 .copied()
-                .filter(|&word_id| self.slots[slot_id].eliminations[word_id].is_none()),
+                .filter(|&word_id| self.slots[slot_id].eliminations[word_id] == LIVE_WORD),
         );
     }
 
@@ -225,6 +226,10 @@ impl LiveSearchState {
 }
 
 fn build_slots(config: &GridConfig) -> Vec<Slot> {
+    assert!(
+        config.slot_configs.len().saturating_sub(1) <= MAX_ENCODED_SLOT_ID,
+        "grid has more slots than the elimination-state encoding supports"
+    );
     config
         .slot_configs
         .iter()
@@ -246,7 +251,7 @@ fn build_slots(config: &GridConfig) -> Vec<Slot> {
             Slot {
                 id: slot_config.id,
                 length: slot_config.length,
-                eliminations: vec![None; config.word_list.words[slot_config.length].len()],
+                eliminations: vec![LIVE_WORD; config.word_list.words[slot_config.length].len()],
                 remaining_option_count: config.slot_options[slot_config.id].len(),
                 preferred_remaining: config.slot_options[slot_config.id]
                     .iter()

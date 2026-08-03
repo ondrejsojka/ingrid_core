@@ -63,12 +63,11 @@ pub struct Slot {
     pub(crate) length: usize,
 
     /// Record of which options from `slot_options` have been eliminated from this slot, stored as
-    /// a Vec indexed by `WordId`:
-    /// * `Some(Some(id))` means "this option has been eliminated by the choice in slot `id`"
-    /// * `Some(None)` means "this option has been eliminated regardless of any choices"
-    /// * `None` means "this option has not been eliminated (or was never available)"
-    #[allow(clippy::option_option)]
-    pub(crate) eliminations: Vec<Option<Option<SlotId>>>,
+    /// a Vec indexed by `WordId`, with a compact 2-byte-per-word encoding of the blame state:
+    /// * `LIVE_WORD` (0) means "this option has not been eliminated (or was never available)"
+    /// * `UNBLAMED_ELIMINATION` (1) means "this option has been eliminated regardless of choices"
+    /// * `slot_id + 2` means "this option has been eliminated by the choice in slot `slot_id`"
+    pub(crate) eliminations: Vec<u16>,
 
     /// To enable us to quickly validate crossing slots, we maintain a count of the number of
     /// instances of each glyph in each cell in our remaining options.
@@ -97,6 +96,28 @@ pub struct Slot {
     pub(crate) fixed_glyph_counts_by_cell: Option<GlyphCountsByCell>,
 }
 
+/// `Slot::eliminations` value for a word that has not been eliminated.
+pub(crate) const LIVE_WORD: u16 = 0;
+
+/// `Slot::eliminations` value for a word eliminated regardless of any slot choices (formerly
+/// `Some(None)` blame).
+pub(crate) const UNBLAMED_ELIMINATION: u16 = 1;
+
+/// The largest slot id the elimination-state encoding can represent (as `slot_id + 2` in a u16).
+pub(crate) const MAX_ENCODED_SLOT_ID: usize = (u16::MAX - 2) as usize;
+
+/// Encode the blame for an elimination into the compact `Slot::eliminations` representation.
+#[inline]
+fn encode_blame(blamed_slot_id: Option<SlotId>) -> u16 {
+    match blamed_slot_id {
+        Some(slot_id) => {
+            debug_assert!(slot_id <= MAX_ENCODED_SLOT_ID);
+            (slot_id as u16) + 2
+        }
+        None => UNBLAMED_ELIMINATION,
+    }
+}
+
 impl Debug for Slot {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Slot")
@@ -105,7 +126,10 @@ impl Debug for Slot {
                 "eliminations",
                 &format!(
                     "({} eliminations)",
-                    self.eliminations.iter().flatten().count()
+                    self.eliminations
+                        .iter()
+                        .filter(|&&state| state != LIVE_WORD)
+                        .count()
                 ),
             )
             .field("remaining_option_count", &self.remaining_option_count)
@@ -129,7 +153,7 @@ impl Slot {
             "Editing eliminations for a fixed slot?"
         );
 
-        self.eliminations[word_id] = Some(blamed_slot_id);
+        self.eliminations[word_id] = encode_blame(blamed_slot_id);
         self.remaining_option_count -= 1;
         self.preferred_remaining -= usize::from(self.preferred_by_word[word_id]);
 
@@ -147,7 +171,7 @@ impl Slot {
             "Editing eliminations for a fixed slot?"
         );
 
-        self.eliminations[word_id] = None;
+        self.eliminations[word_id] = LIVE_WORD;
         self.remaining_option_count += 1;
         self.preferred_remaining += usize::from(self.preferred_by_word[word_id]);
 
@@ -159,8 +183,9 @@ impl Slot {
 
     /// Remove all eliminations that were created because of the last choice in the given slot.
     pub(crate) fn clear_eliminations(&mut self, config: &GridConfig, slot_id: SlotId) {
+        let blamed_encoding = encode_blame(Some(slot_id));
         for word_id in 0..self.eliminations.len() {
-            if self.eliminations[word_id] == Some(Some(slot_id)) {
+            if self.eliminations[word_id] == blamed_encoding {
                 self.remove_elimination(config, word_id);
             }
         }
@@ -197,7 +222,7 @@ impl Slot {
                         assert_eq!(
                             config.slot_options[self.id]
                                 .iter()
-                                .filter(|&&word_id| self.eliminations[word_id].is_none())
+                                .filter(|&&word_id| self.eliminations[word_id] == LIVE_WORD)
                                 .count(),
                             1,
                             "slot with one remaining option must have eliminations for all others"
@@ -206,7 +231,7 @@ impl Slot {
 
                     let word_id = config.slot_options[self.id]
                         .iter()
-                        .find(|&&word_id| self.eliminations[word_id].is_none());
+                        .find(|&&word_id| self.eliminations[word_id] == LIVE_WORD);
 
                     word_id.map(|&word_id| Choice {
                         slot_id: self.id,
@@ -344,7 +369,7 @@ pub(crate) fn maintain_arc_consistency(
 
     impl ArcConsistencyAdapter for Adapter<'_> {
         fn is_word_eliminated(&self, slot_id: SlotId, word_id: WordId) -> bool {
-            self.slots[slot_id].eliminations[word_id].is_some()
+            self.slots[slot_id].eliminations[word_id] != LIVE_WORD
         }
 
         fn get_glyph_counts(&self, slot_id: SlotId) -> GlyphCountsByCell {
@@ -365,7 +390,7 @@ pub(crate) fn maintain_arc_consistency(
                     let first_two = self.config.slot_options[slot_id]
                         .iter()
                         .filter(|&word_id| {
-                            self.slots[slot_id].eliminations[*word_id].is_none()
+                            self.slots[slot_id].eliminations[*word_id] == LIVE_WORD
                                 && !eliminations.contains(*word_id)
                         })
                         .copied()
@@ -385,7 +410,7 @@ pub(crate) fn maintain_arc_consistency(
                 self.config.slot_options[slot_id]
                     .iter()
                     .find(|&word_id| {
-                        self.slots[slot_id].eliminations[*word_id].is_none()
+                        self.slots[slot_id].eliminations[*word_id] == LIVE_WORD
                             && !eliminations.contains(*word_id)
                     })
                     .copied()
@@ -726,7 +751,7 @@ fn find_fill_for_seed_with_options(
             .iter()
             .enumerate()
             .skip(starting_word_idx)
-            .filter(|&(_, &word_id)| slots[slot_id].eliminations[word_id].is_none())
+            .filter(|&(_, &word_id)| slots[slot_id].eliminations[word_id] == LIVE_WORD)
             .take(RANDOM_WORD_WEIGHTS.len())
             .collect();
 
