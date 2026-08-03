@@ -5,8 +5,9 @@ Kept deliberately dumb: the crossword renderers produce complete HTML documents,
 only carries them. Same hard-won details as the crossword-email skill —
 
 * the API key in `~/.env` is send-only; it cannot list domains or read sent mail,
-* `from` must be `onboarding@resend.dev` until a domain is verified, and that shared
-  sender only delivers to the account owner's own address,
+* `ondrejsojka.com` is a verified Resend domain, so `from` defaults to
+  `<model_name>@ondrejsojka.com` and delivers to any recipient; the shared
+  `onboarding@resend.dev` sender only reaches the account owner's own address,
 * POST with curl, not urllib: api.resend.com answers urllib with 403 error code 1010,
 * the payload goes through a temp file, because 100 kB of Czech HTML in argv gets mangled.
 """

@@ -2,8 +2,8 @@
 """Render a crossword fill plus clue set as an HTML email and send it with Resend.
 
 See SKILL.md next to this file. The transport is scripts/send_mail.py: on the
-Resend side the key in ~/.env is send-only, and the sender must be
-onboarding@resend.dev unless a domain is verified.
+Resend side the key in ~/.env is send-only; the sender is <model>@ondrejsojka.com
+(verified domain) unless --from-address says otherwise.
 """
 
 import argparse
@@ -152,7 +152,7 @@ def locate(rows, nums, across, down, answers):
     return spans
 
 
-def render(rows, nums, across, down, clues, title, headline, intro, tajenka=()):
+def render(rows, nums, across, down, clues, title, headline, intro, tajenka=(), solution=True):
     shaded = {cell for _, cells, _ in tajenka for cell in cells}
 
     def cell(r, c, solved):
@@ -223,6 +223,16 @@ def render(rows, nums, across, down, clues, title, headline, intro, tajenka=()):
     else:
         prompt = answer = ""
 
+    solution_html = ""
+    if solution:
+        solution_html = f"""<h2>Řešení</h2>
+{table(True)}
+{answer}
+<h2>Klíč s pásmy a tvary</h2>
+<div class="cols"><div><h3>Vodorovně</h3>{key_list(across)}</div>
+<div><h3>Svisle</h3>{key_list(down)}</div></div>
+"""
+
     return f"""<!doctype html>
 <html lang="cs"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -235,13 +245,7 @@ def render(rows, nums, across, down, clues, title, headline, intro, tajenka=()):
 {table(False)}
 <div class="cols"><div><h3>Vodorovně</h3>{clue_list(across)}</div>
 <div><h3>Svisle</h3>{clue_list(down)}</div></div>
-<h2>Řešení</h2>
-{table(True)}
-{answer}
-<h2>Klíč s pásmy a tvary</h2>
-<div class="cols"><div><h3>Vodorovně</h3>{key_list(across)}</div>
-<div><h3>Svisle</h3>{key_list(down)}</div></div>
-<h2>Čísla</h2>
+{solution_html}<h2>Čísla</h2>
 {stats}
 </main></body></html>"""
 
@@ -277,7 +281,7 @@ def swedish_slots(rows):
     return across_slots, down_slots
 
 
-def render_swedish(rows, clues, title, headline, intro, tajenka=()):
+def render_swedish(rows, clues, title, headline, intro, tajenka=(), solution=True):
     h, w = len(rows), len(rows[0])
     across_slots, down_slots = swedish_slots(rows)
 
@@ -395,6 +399,16 @@ def render_swedish(rows, clues, title, headline, intro, tajenka=()):
     else:
         prompt = answer = ""
 
+    solution_html = ""
+    if solution:
+        solution_html = f"""<h2>Řešení</h2>
+{table_sw(True)}
+{answer}
+<h2>Klíč s pásmy a tvary</h2>
+<div class="cols"><div><h3>Vodorovně</h3>{key_list(across_slots)}</div>
+<div><h3>Svisle</h3>{key_list(down_slots)}</div></div>
+"""
+
     css_sw = """
 body{margin:0;background:#f7f4ee;color:#202020;font:16px/1.55 system-ui,-apple-system,sans-serif}
 main{max-width:1060px;margin:auto;padding:32px 22px 56px}
@@ -435,13 +449,7 @@ table.d th{background:#efeade;font-weight:600}
 <h2>Mřížka</h2>
 {prompt}
 {table_sw(False)}
-<h2>Řešení</h2>
-{table_sw(True)}
-{answer}
-<h2>Klíč s pásmy a tvary</h2>
-<div class="cols"><div><h3>Vodorovně</h3>{key_list(across_slots)}</div>
-<div><h3>Svisle</h3>{key_list(down_slots)}</div></div>
-<h2>Čísla</h2>
+{solution_html}<h2>Čísla</h2>
 {stats}
 </main></body></html>"""
 
@@ -462,6 +470,11 @@ def main():
         choices=["american", "swedish"],
         default="american",
         help="grid layout: american (default) or swedish",
+    )
+    ap.add_argument(
+        "--no-solution",
+        action="store_true",
+        help="reader-facing send: omit the Řešení grid, the klíč, and the tajenka answer",
     )
     ap.add_argument(
         "--tajenka",
@@ -487,7 +500,8 @@ def main():
 
         intro = open(args.intro, encoding="utf-8").read() if args.intro else ""
         html = render(rows, nums, across, down, clues, args.subject,
-                      args.headline or args.subject, intro, tajenka)
+                      args.headline or args.subject, intro, tajenka,
+                      solution=not args.no_solution)
     else:
         across_slots, down_slots = swedish_slots(rows)
         _, warnings = check(across_slots + down_slots, clues)
@@ -502,7 +516,8 @@ def main():
 
         intro = open(args.intro, encoding="utf-8").read() if args.intro else ""
         html = render_swedish(rows, clues, args.subject,
-                             args.headline or args.subject, intro, tajenka)
+                             args.headline or args.subject, intro, tajenka,
+                             solution=not args.no_solution)
 
     if args.out:
         open(args.out, "w", encoding="utf-8").write(html)

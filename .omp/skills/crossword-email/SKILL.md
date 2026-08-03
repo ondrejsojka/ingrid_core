@@ -16,6 +16,7 @@ python3 .omp/skills/crossword-email/send_crossword_email.py \
   --fill local/trials/no_marked_n33_fill.txt \
   --clues local/trials/no_marked_n33_clues.tsv \
   --subject "Metropolitan: nejnovější mřížka" \
+  --from-address kimi-k3@ondrejsojka.com \
   --to ondrej.sojka@gmail.com \
   --intro intro.html \
   --out local/metropolitan-krizovka-2026-07-30.html
@@ -39,6 +40,9 @@ obvious visually and invisible in the source.
   „— vada fillu" and excluded from the metrics.
 - `--intro`: optional HTML fragment dropped under the headline. This is where the
   commentary goes; keep it out of the script.
+- `--no-solution`: reader-facing mode. Omits the Řešení grid, the klíč, and the
+  tajenka answer; keeps the grid, clue lists, intro, and metrics. Use when the
+  recipient is meant to solve it.
 
 ## Swedish layout rules & constraints
 
@@ -53,8 +57,11 @@ obvious visually and invisible in the source.
 - **The key is send-only.** `~/.env` holds `RESEND_API_KEY`. It cannot list domains
   or read sent mail — `GET /domains` returns 401 `restricted_api_key`. Don't try to
   verify delivery through the API; check with the recipient.
-- **`from` must be `onboarding@resend.dev`** unless a verified domain has been set up.
-  That shared sender only delivers to the account owner's own address.
+- **`ondrejsojka.com` is a verified Resend domain.** Default sender is
+  `<model_name>@ondrejsojka.com` — the local part is the sending agent's own model
+  name (`kimi-k3` → `kimi-k3@ondrejsojka.com`); pass it via `--from-address`.
+  Delivery works to any recipient, not just the account owner. The old shared sender
+  `onboarding@resend.dev` only reaches the account owner; keep it out of reader mail.
 - **Send with `curl`, not `urllib`.** `urllib.request` to `api.resend.com` gets
   `403 error code: 1010` (Cloudflare rejects the default Python user agent). The
   script shells out to `curl --data-binary @payload.json`; keep it that way.
