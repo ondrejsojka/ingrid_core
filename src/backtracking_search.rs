@@ -334,6 +334,20 @@ pub(crate) fn calculate_slot_priority(
     (slots[slot_id].remaining_option_count as f32) / slot_weights[slot_id]
 }
 
+/// Preferred-tier steering of slot priority: a slot's `dom/wdeg` priority is divided by up to
+/// `1 + PREFERRED_STEERING_BETA * PREFERRED_STEERING_CAP` the more live Preferred options its
+/// domain still holds, so the search commits early to the slots where the preferred-word target
+/// is actually attainable.
+const PREFERRED_STEERING_BETA: f32 = 1.0;
+const PREFERRED_STEERING_CAP: f32 = 8.0;
+
+/// `dom/wdeg` priority (lower is better) rescaled by the preferred-tier steering term above.
+fn preferred_steered_slot_priority(slots: &[Slot], slot_weights: &[f32], slot_id: SlotId) -> f32 {
+    let preferred_live = (slots[slot_id].preferred_remaining as f32).min(PREFERRED_STEERING_CAP);
+    calculate_slot_priority(slots, slot_weights, slot_id)
+        / (1.0 + PREFERRED_STEERING_BETA * preferred_live)
+}
+
 #[derive(Debug)]
 pub(crate) enum ArcConsistencyMode {
     Initial,
@@ -595,7 +609,7 @@ fn choose_next_slot(
 
     // Otherwise, sort the remaining slots by priority.
     sorted_slot_ids.sort_by_cached_key(|&slot_id| {
-        let priority = calculate_slot_priority(slots, slot_weights, slot_id);
+        let priority = preferred_steered_slot_priority(slots, slot_weights, slot_id);
 
         if best_slot_priority.map_or(true, |best_priority| best_priority > priority) {
             best_slot_priority = Some(priority);
