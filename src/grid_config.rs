@@ -426,10 +426,8 @@ impl<'de> Deserialize<'de> for SlotSpec {
 /// `SlotConfig`s containing derived information about crossings, etc.
 #[must_use]
 pub fn generate_slot_configs(entries: &[SlotSpec]) -> (Vec<SlotConfig>, usize) {
-    #[derive(Debug)]
     struct GridCell {
         entries: Vec<(usize, usize)>, // (entry index, cell index within entry)
-        number: Option<u32>,
     }
 
     let mut slot_configs: Vec<SlotConfig> = vec![];
@@ -440,29 +438,14 @@ pub fn generate_slot_configs(entries: &[SlotSpec]) -> (Vec<SlotConfig>, usize) {
 
     for (entry_idx, entry) in entries.iter().enumerate() {
         for (cell_idx, &loc) in entry.cell_coords().iter().enumerate() {
-            let grid_cell = cell_by_loc.entry(loc).or_insert_with(|| GridCell {
-                entries: vec![],
-                number: None,
-            });
+            let grid_cell = cell_by_loc
+                .entry(loc)
+                .or_insert_with(|| GridCell { entries: vec![] });
             grid_cell.entries.push((entry_idx, cell_idx));
         }
     }
 
-    let mut ordered_coords: Vec<_> = cell_by_loc.keys().copied().collect();
-    ordered_coords.sort_by_key(|&(x, y)| (y, x));
-    let mut current_number = 1;
-    for coord in ordered_coords {
-        if cell_by_loc[&coord]
-            .entries
-            .iter()
-            .any(|&(_, cell_idx)| cell_idx == 0)
-        {
-            cell_by_loc.get_mut(&coord).unwrap().number = Some(current_number);
-            current_number += 1;
-        }
-    }
-
-    // This is slightly tricky. When we're generating a Crossing, if
+    // This is slightly tricky... When we're generating a Crossing, if
     // `(current_slot_id, crossing_slot_id)` is in this list, use its index; if not, use
     // `constraint_id_cache.len()` as the id and push `(crossing_slot_id, current_id)` into the list
     // so we can reuse it when we see the crossing from the other side. This wouldn't work if the

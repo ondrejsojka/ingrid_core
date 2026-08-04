@@ -145,6 +145,13 @@ Measured why: baseline backtracks/fill median ~23, p90 ~396; geometric commitmen
   slots whose live preferred options are scarce (preferred_remaining low) so the search
 commits to preferred-feasible regions early. Directly aligned with time-to-K metric.
 
+### Round 9 candidates
+
+- `steering_tuning_matrix` — tune the merged steering (BETA 0 {off}, 0.5, 1, 2, 4 × CAP
+  {4, 8, 16}) plus polarity check if cheap; acceptance: primary p_faster<=0.05 vs HEAD
+  AND s1 p_slower > 0.05 simultaneously (both grids matter).
+- `ordering_pool_tuning` — pool size {8,12,24} for the round-6 dynamic ordering.
+
 ### Round 8 (2026-08-04) — 1 KEEP (large), 1 DISCARD
 
 - `preferred_steering` — KEEP. Slot priority = dom/wdeg / (1 + 1.0*min(preferred_remaining, 8)):
@@ -156,6 +163,11 @@ commits to preferred-feasible regions early. Directly aligned with time-to-K met
   every jump (blame tags are provably too shallow: provisional wipeout eliminations attribute
   to the most recent open choice only), which costs what jumps save. Parked unless workloads
   become proof-bound. Report: docs/perf_investigations/conflict_directed_backjumping.md.
+
+- s1 verification (merged binary, 10 solo rounds): ratio 1.705 again but p_slower=0.161 —
+  insignificant twice, gate holds, merge stands. Pattern read: steering helps scarce-preferred
+  grids (79-form Czech tier), taxes abundant ones (1240-form LFŠ tier, term saturated).
+  Folded into round-9 `steering_tuning_matrix` as a second constraint.
 
 ### Round 6 candidates
 
