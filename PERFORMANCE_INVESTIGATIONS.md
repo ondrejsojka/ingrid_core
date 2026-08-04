@@ -145,6 +145,18 @@ Measured why: baseline backtracks/fill median ~23, p90 ~396; geometric commitmen
   slots whose live preferred options are scarce (preferred_remaining low) so the search
 commits to preferred-feasible regions early. Directly aligned with time-to-K metric.
 
+### Round 8 (2026-08-04) — 1 KEEP (large), 1 DISCARD
+
+- `preferred_steering` — KEEP. Slot priority = dom/wdeg / (1 + 1.0*min(preferred_remaining, 8)):
+  commit early to slots that can still host preferred words. Primary target:8: 10/10 wins,
+  p=0.00098, medians 6264.5 -> 689.5 ms (paired ratio 0.1417, 7x). s2 neutral; s1 ratio 1.759
+  at p_slower=0.216 (insignificant; post-merge verification check logged). Report:
+  docs/perf_investigations/preferred_steering.md.
+- `conflict_directed_backjumping` — DISCARD. Sound CBJ requires clone+replay certification of
+  every jump (blame tags are provably too shallow: provisional wipeout eliminations attribute
+  to the most recent open choice only), which costs what jumps save. Parked unless workloads
+  become proof-bound. Report: docs/perf_investigations/conflict_directed_backjumping.md.
+
 ### Round 6 candidates
 
 - `luby_restarts` — Luby restart sequence for the randomized-restart backtrack cap
