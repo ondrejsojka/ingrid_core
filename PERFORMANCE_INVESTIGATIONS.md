@@ -152,6 +152,8 @@ Workers must use the comparator's `paired` block, not bare U, for verdicts from 
 
 (earlier rounds 1-5 below)
 
+### Round 2/3 (2026-08-02) — 3 candidates, 3 KEEP (one via transcript salvage)
+
 - `wordlist_build_parallel` — KEEP. s2_fast_wall median -37.6% (10/10 wins, p=0.00098);
   P neutral. Parallel chunk parse + ASCII normalize fast path; its FxHash swap was later
   isolated-measured NEGATIVE and removed (see NEGATIVE entry below).
