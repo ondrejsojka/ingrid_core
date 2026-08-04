@@ -124,6 +124,27 @@ Workers must use the comparator's `paired` block, not bare U, for verdicts from 
 - Metric update: K=8 calibration at HEAD reachable on both probed seeds (4.2s, 37.6s);
   **primary metric moves to target:8 from round 6** (time-to-6 compressed to ~1s floor).
 
+### Round 7 (2026-08-04) — both DISCARD (empty round; restart and prefetch micro-paths closed)
+
+- `luby_restarts` — DISCARD, provably slower: 3/10 wins, ratio 1.106 (+10.6% time).
+Measured why: baseline backtracks/fill median ~23, p90 ~396; geometric commitment +
+  frontier-swarm diversity beats Luby's chop. Restart-schedule tree EXHAUSTED.
+  Report: docs/perf_investigations/luby_restarts.md.
+- `eliminate_word_batching` — DISCARD, provably neutral (p=0.42) after a reproducible
+  prefetch REGRESSION lesson (V1: 8/10 losses, p_slower=0.042): prefetch fired on
+  mostly-skipped words. eliminate_word read-path is NOT memory-starved.
+  Report: docs/perf_investigations/eliminate_word_batching.md.
+
+### Round 8 candidates
+
+- `conflict_directed_backjumping` — replace chronological backtracking with CBJ using
+  the blamed_slot_id elimination tags as conflict sets; skip irrelevant intermediate
+  choices after wipeouts. Soundness requirement: never report HardFailure where a fill
+  exists.
+- `preferred_steering` — preferred-aware variable ordering in choose_next_slot: boost
+  slots whose live preferred options are scarce (preferred_remaining low) so the search
+commits to preferred-feasible regions early. Directly aligned with time-to-K metric.
+
 ### Round 6 candidates
 
 - `luby_restarts` — Luby restart sequence for the randomized-restart backtrack cap
