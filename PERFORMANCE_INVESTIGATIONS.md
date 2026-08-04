@@ -160,7 +160,9 @@ commits to preferred-feasible regions early. Directly aligned with time-to-K met
 - `steering_tuning_matrix` (worker): died to provider brownout on its first screen; the
   shipped (BETA=1, CAP=8) win stands banked; tuning surface remains future work.
 - Loop concluded by user request after round 9. Campaign verification r0 -> HEAD on
-  target:8 is the closing measurement (campaign_final).
+  target:8 (campaign_final): baseline 9/10 timeout-censored at 120s (one seed 80s),
+  HEAD 0.6-1.7s on ALL seeds — 10/10 wins, p=0.00098, nominal ~135x (unbounded,
+  baseline censored).
 
 - `preferred_steering` — KEEP. Slot priority = dom/wdeg / (1 + 1.0*min(preferred_remaining, 8)):
   commit early to slots that can still host preferred words. Primary target:8: 10/10 wins,
