@@ -67,7 +67,8 @@ fn live_crossing_support(
             .unwrap_or(&crossing_slot.glyph_counts_by_cell);
         support += (glyph_counts_by_cell[crossing.other_slot_cell][glyph] as f32).ln_1p();
     }
-    // An uncrossed word cannot fail at a crossing, so rank it behind every crossed candidate.
+    // An uncrossed word cannot fail at a crossing and thus sorts as maximally supported
+    // under the ordering's descending support comparison.
     if has_crossing {
         support
     } else {

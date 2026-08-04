@@ -126,13 +126,31 @@ Workers must use the comparator's `paired` block, not bare U, for verdicts from 
 
 ### Round 6 candidates
 
-- `cross_worker_weight_sharing` — portfolio-style sharing of dom/wdeg crossing-weight
-  signals between parallel workers (lock-free atomic array, periodic merge/pull).
-  Heuristic-only values => zero semantics risk; trajectories judged by bench only.
-- `dynamic_value_ordering` — replace static top-3 candidate ranking with crossing-support
-  -aware value ordering (fail-first on rare glyphs) in the word-candidate choice.
+- `luby_restarts` — Luby restart sequence for the randomized-restart backtrack cap
+  (vs the current `max_backtracks = 500` + ×1.1 geometric growth). Literature-backed
+  schedule for heavy-tailed search; swarming already diversifies, Luby sharpens each
+  stream.
+- `eliminate_word_batching` — per-cell batched elimination: when a dead-glyph bucket
+  dies (support_index CSR), mark the whole bucket eliminated in option order in one
+  pass (bitmap/branch-light) instead of per-word `eliminate_word` calls (16%% self in
+  the round-3 profile).
+- `ordering_pool_tuning` — sweep pool size {8,12,16,24} × polarity {support-first,
+  fail-first} × pick {best, weighted} for the round-6 mechanism. Defer one round so
+  the merged design settles.
 
-### Round 2/3 (2026-08-02) — 3 candidates, 3 KEEP (one via transcript salvage)
+### Round 6 (2026-08-02/04) — 1 KEEP, 1 DISCARD (both via brownout salvage)
+
+- `dynamic_value_ordering` — KEEP, provider-brownout transcript salvage. Primary
+  (target:8) 8/10 wins p=0.0244, median paired ratio 0.463 (-54%); baseline's 3
+  timeout-censored seeds became 5-21s fills. s1/s2 neutral. Report:
+  docs/perf_investigations/dynamic_value_ordering.md.
+- `cross_worker_weight_sharing` — DISCARD, transcript salvage. Retry-boundary max-merge
+  of crossing weights; primary 5/5 neutral (p_faster=0.385). The frontier swarm already
+  supplies the redundancy. Report: docs/perf_investigations/cross_worker_weight_sharing.md.
+- Salvage protocol proven twice now: replay jsonl edit payloads in order, drop
+  superseded edits, rebuild, test, measure inline.
+
+(earlier rounds 1-5 below)
 
 - `wordlist_build_parallel` — KEEP. s2_fast_wall median -37.6% (10/10 wins, p=0.00098);
   P neutral. Parallel chunk parse + ASCII normalize fast path; its FxHash swap was later
