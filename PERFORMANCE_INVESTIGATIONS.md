@@ -152,7 +152,15 @@ commits to preferred-feasible regions early. Directly aligned with time-to-K met
   AND s1 p_slower > 0.05 simultaneously (both grids matter).
 - `ordering_pool_tuning` — pool size {8,12,24} for the round-6 dynamic ordering.
 
-### Round 8 (2026-08-04) — 1 KEEP (large), 1 DISCARD
+### Round 9 (2026-08-04) — wrap round: 1 small consolidation merged, tuning cancelled
+
+- `consolidation_round_1` (worker, died to provider brownout mid-analysis, 0 edits):
+  salvageable finding was a genuinely dead `GridCell.number` write-only field and its
+  numbering loop in grid_config.rs — removed inline, semantics unchanged, tests 100/100.
+- `steering_tuning_matrix` (worker): died to provider brownout on its first screen; the
+  shipped (BETA=1, CAP=8) win stands banked; tuning surface remains future work.
+- Loop concluded by user request after round 9. Campaign verification r0 -> HEAD on
+  target:8 is the closing measurement (campaign_final).
 
 - `preferred_steering` — KEEP. Slot priority = dom/wdeg / (1 + 1.0*min(preferred_remaining, 8)):
   commit early to slots that can still host preferred words. Primary target:8: 10/10 wins,
