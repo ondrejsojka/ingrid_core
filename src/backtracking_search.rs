@@ -37,6 +37,44 @@ pub const RANDOM_SLOT_WEIGHTS: [u8; 3] = [4, 2, 1];
 /// How do we weigh the highest-ranked N words when choosing a word for a given slot?
 pub const RANDOM_WORD_WEIGHTS: [u8; 3] = [4, 2, 1];
 
+/// How many live candidates, in the static ranking's order, form the pool that the dynamic value
+/// ordering re-ranks by live crossing support before each word choice.
+const DYNAMIC_ORDERING_POOL_SIZE: usize = 12;
+
+/// Live crossing-support metric for placing `word_id` in `slot_id`: the sum, over the word's
+/// crossings, of log1p of the number of live crossing-slot options carrying the word's glyph at
+/// the crossing cell. Words whose glyphs are currently rare at crossings score low; they are the
+/// likeliest to be forced and to fail fast, so the dynamic value ordering tries them first.
+fn live_crossing_support(
+    config: &GridConfig,
+    slots: &[Slot],
+    slot_id: SlotId,
+    word_id: WordId,
+) -> f32 {
+    let slot_config = &config.slot_configs[slot_id];
+    let word = &config.word_list.words[slot_config.length][word_id];
+    let mut support = 0.0f32;
+    let mut has_crossing = false;
+    for (cell_idx, &glyph) in word.glyphs.iter().enumerate() {
+        let Some(crossing) = &slot_config.crossings[cell_idx] else {
+            continue;
+        };
+        has_crossing = true;
+        let crossing_slot = &slots[crossing.other_slot_id];
+        let glyph_counts_by_cell = crossing_slot
+            .fixed_glyph_counts_by_cell
+            .as_ref()
+            .unwrap_or(&crossing_slot.glyph_counts_by_cell);
+        support += (glyph_counts_by_cell[crossing.other_slot_cell][glyph] as f32).ln_1p();
+    }
+    // An uncrossed word cannot fail at a crossing, so rank it behind every crossed candidate.
+    if has_crossing {
+        support
+    } else {
+        f32::INFINITY
+    }
+}
+
 /// How much do we increase the backtrack limit when retrying?
 pub const RETRY_GROWTH_FACTOR: f32 = 1.1;
 
@@ -746,13 +784,27 @@ fn find_fill_for_seed_with_options(
             0
         };
 
-        // Take as many available candidate words as we have weights in `RANDOM_WORD_WEIGHTS`.
-        let word_candidates: Vec<(usize, &WordId)> = config.slot_options[slot_id]
+        // Take a pool of live candidates in the static ranking's order and re-rank it
+        // dynamically: words whose glyphs are currently well supported at their crossings are the
+        // least constraining live choices, so trying them first limits the elimination cascades
+        // that lead to backtracks. The Preferred tier keeps priority over Standard so the
+        // re-ranking cannot starve preferred words; ties keep the static ranking (the sort is
+        // stable). This only reorders the candidates we consider, never restricts which words
+        // remain available.
+        let mut word_candidates: Vec<(usize, WordId, u8, f32)> = config.slot_options[slot_id]
             .iter()
             .enumerate()
             .skip(starting_word_idx)
             .filter(|&(_, &word_id)| slots[slot_id].eliminations[word_id] == LIVE_WORD)
-            .take(RANDOM_WORD_WEIGHTS.len())
+            .take(DYNAMIC_ORDERING_POOL_SIZE)
+            .map(|(idx, &word_id)| {
+                (
+                    idx,
+                    word_id,
+                    u8::from(!slots[slot_id].preferred_by_word[word_id]),
+                    live_crossing_support(config, &slots, slot_id, word_id),
+                )
+            })
             .collect();
 
         assert!(
@@ -761,14 +813,18 @@ fn find_fill_for_seed_with_options(
             slots[slot_id]
         );
 
-        // Choose one of the candidates at (weighted) random.
-        let (_, &word_id) =
-            word_candidates[word_dist.sample(&mut rng).min(word_candidates.len() - 1)];
+        // Record our position so we can pick up where we left off if needed: the first pool
+        // member's index in the static ordering (captured before re-ranking), so that a later
+        // retry of this slot reconsiders every word at or after it without skipping any words.
+        let first_static_idx = word_candidates[0].0;
 
-        // Record our position so we can pick up where we left off if needed, using the first
-        // candidate index to make sure we don't skip any words.
+        word_candidates.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| b.3.total_cmp(&a.3)));
+
+        // Choose one of the best-ranked candidates at (weighted) random.
+        let word_id = word_candidates[word_dist.sample(&mut rng).min(word_candidates.len() - 1)].1;
+
         last_slot_id = Some(slot_id);
-        last_starting_word_idx = Some(word_candidates[0].0);
+        last_starting_word_idx = Some(first_static_idx);
 
         let choice = Choice { slot_id, word_id };
 
@@ -1312,6 +1368,7 @@ mod tests {
     #[test]
     fn test_add_extra_dupe_rules() {
         let mut word_list = load_word_list(7);
+        let rendered_1;
 
         {
             let grid_config = generate_config(
@@ -1332,15 +1389,17 @@ mod tests {
 
             // Obviously we'll have to rewrite this test if the algorithm changes in
             // a way that affects the output, but w/e.
+            // (Rewritten for the dynamic value ordering, which changed the fill trajectory.)
+            rendered_1 = render_grid(&grid_config.to_config_ref(), &result_1.choices);
             assert_eq!(
-                render_grid(&grid_config.to_config_ref(), &result_1.choices),
+                rendered_1,
                 indoc! {"
                 .ass...
-                .glib..
-                alamosa
+                .ilia..
+                imamess
                 retiree
-                reelers
-                ..seat.
+                adelina
+                ..reed.
                 ...sss.
                 "}
                 .trim()
@@ -1379,15 +1438,21 @@ mod tests {
             let result_2 =
                 find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
 
+            // The extra dupe rule must actually bind: the new fill cannot contain both paired
+            // words, so it differs from `result_1` (which used both "retiree" and "sss").
+            // (Expectation rewritten for the dynamic value ordering's changed trajectory.)
+            let rendered_2 = render_grid(&grid_config.to_config_ref(), &result_2.choices);
+            assert_ne!(rendered_1, rendered_2);
+            assert!(!(rendered_2.contains("retiree") && rendered_2.contains("sss")));
             assert_eq!(
-                render_grid(&grid_config.to_config_ref(), &result_2.choices),
+                rendered_2,
                 indoc! {"
                 .ass...
-                .glia..
-                blameme
-                retinas
-                reelers
-                ..seat.
+                .slit..
+                inamist
+                patinae
+                apelike
+                ..deee.
                 ...sss.
                 "}
                 .trim()
