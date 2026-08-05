@@ -169,7 +169,13 @@ pub fn count_preferred_words(config: &GridConfig, choices: &[Choice]) -> usize {
         .count()
 }
 
-pub(crate) fn canonical_fill_key(config: &GridConfig, choices: &[Choice]) -> Option<Box<[WordId]>> {
+/// Canonical slot-indexed key of a complete fill: one word per slot, in slot order.
+///
+/// Returns `None` unless `choices` holds exactly one choice per slot. The key is the identity of a
+/// fill for [`DistinctFillSet`] distinctness and can be turned back into choices with
+/// [`choices_from_fill_key`].
+#[must_use]
+pub fn canonical_fill_key(config: &GridConfig, choices: &[Choice]) -> Option<Box<[WordId]>> {
     if choices.len() != config.slot_configs.len() {
         return None;
     }
@@ -184,6 +190,55 @@ pub(crate) fn canonical_fill_key(config: &GridConfig, choices: &[Choice]) -> Opt
         .into_iter()
         .collect::<Option<Vec<_>>>()
         .map(Vec::into_boxed_slice)
+}
+
+/// Rebuild the choices of a fill from its [`canonical_fill_key`], inverse to it positionally.
+///
+/// Returns `None` unless `key` holds exactly one word per slot.
+#[must_use]
+pub fn choices_from_fill_key(config: &GridConfig, key: &[WordId]) -> Option<Vec<Choice>> {
+    if key.len() != config.slot_configs.len() {
+        return None;
+    }
+    Some(
+        key.iter()
+            .enumerate()
+            .map(|(slot_id, &word_id)| Choice { slot_id, word_id })
+            .collect(),
+    )
+}
+
+/// Up to `count` distinct certified fills as choice vectors, incumbent first, then the remaining
+/// certified fills in canonical-key order.
+///
+/// Every returned fill sits at the result's Preferred threshold, and the incumbent is always
+/// first, so `count == 1` is exactly the classical single-fill result. The pool may be smaller
+/// than `count`: it holds only the fills the scheduler certified during the run.
+#[must_use]
+pub fn distinct_incumbent_fills(
+    config: &GridConfig,
+    result: &PreferredFillSuccess,
+    count: usize,
+) -> Vec<Vec<Choice>> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let incumbent_key = canonical_fill_key(config, &result.fill.choices)
+        .expect("solver fills contain one choice per slot");
+    let mut fills = Vec::with_capacity(count);
+    fills.push(result.fill.choices.clone());
+    for key in result.certified_fills.iter() {
+        if fills.len() >= count {
+            break;
+        }
+        if key[..] == incumbent_key[..] {
+            continue;
+        }
+        let choices =
+            choices_from_fill_key(config, key).expect("certified fills hold one word per slot");
+        fills.push(choices);
+    }
+    fills
 }
 
 fn fixed_preferred_word_count(config: &GridConfig) -> usize {
@@ -838,13 +893,18 @@ fn find_best_fill_internal(
 #[cfg(test)]
 mod tests {
     use super::{
-        adaptive_branching_threshold_for_worker, find_best_fill, find_best_fill_with_observer,
-        initial_targets, prepare_search, SearchEventKind, SearchEventResult,
+        adaptive_branching_threshold_for_worker, canonical_fill_key, choices_from_fill_key,
+        count_preferred_words, distinct_incumbent_fills, find_best_fill,
+        find_best_fill_with_observer, initial_targets, prepare_search, PreferredFillSuccess,
+        SearchEventKind, SearchEventResult,
     };
     use crate::backtracking_search::{
-        find_fill_with_options, FillFailure, FillOptions, ADAPTIVE_BRANCHING_THRESHOLD,
+        find_fill_with_options, FillFailure, FillOptions, FillSuccess, Statistics,
+        ADAPTIVE_BRANCHING_THRESHOLD,
     };
-    use crate::grid_config::generate_grid_config_from_template_string;
+    use crate::fill_set::DistinctFillSet;
+    use crate::grid_config::{generate_grid_config_from_template_string, render_grid, Choice};
+    use crate::types::WordId;
     use crate::word_list::{WordList, WordListSourceConfig, WordListSourceConfigProvider};
     use std::collections::HashSet;
     use std::sync::atomic::AtomicBool;
@@ -875,6 +935,115 @@ mod tests {
     ) -> crate::grid_config::OwnedGridConfig<'_> {
         generate_grid_config_from_template_string(word_list, "...\n", 0)
             .expect("test template is valid")
+    }
+
+    fn word_id(word_list: &WordList, word: &str) -> WordId {
+        *word_list
+            .word_id_by_string
+            .get(word)
+            .expect("fixture word should exist")
+    }
+
+    /// `cat`/`dog` give two independent three-letter across slots exactly two fills: the mirrored
+    /// assignments, both at the same preferred count.
+    fn two_slot_template() -> &'static str {
+        "...\n###\n...\n"
+    }
+
+    #[test]
+    fn choices_from_fill_key_rebuilds_canonical_keys_and_rejects_wrong_lengths() {
+        let mut word_list = tiered_word_list();
+        let config =
+            generate_grid_config_from_template_string(&mut word_list, two_slot_template(), 0)
+                .expect("test template is valid");
+        let config_ref = config.to_config_ref();
+        let (cat, dog) = (
+            word_id(config.word_list, "cat"),
+            word_id(config.word_list, "dog"),
+        );
+        let key: Box<[WordId]> = vec![cat, dog].into_boxed_slice();
+
+        let choices = choices_from_fill_key(&config_ref, &key).expect("two-slot key");
+        assert_eq!(
+            choices
+                .iter()
+                .map(|&Choice { slot_id, word_id }| (slot_id, word_id))
+                .collect::<Vec<_>>(),
+            vec![(0, cat), (1, dog)]
+        );
+        assert_eq!(
+            canonical_fill_key(&config_ref, &choices).as_deref(),
+            Some(&key[..])
+        );
+        assert!(choices_from_fill_key(&config_ref, &key[..1]).is_none());
+        assert!(choices_from_fill_key(&config_ref, &[cat, dog, cat]).is_none());
+    }
+
+    #[test]
+    fn distinct_incumbent_fills_emits_incumbent_then_certified_fills() {
+        let mut word_list = tiered_word_list();
+        let config =
+            generate_grid_config_from_template_string(&mut word_list, two_slot_template(), 0)
+                .expect("test template is valid");
+        let config_ref = config.to_config_ref();
+        let (cat, dog) = (
+            word_id(config.word_list, "cat"),
+            word_id(config.word_list, "dog"),
+        );
+        let incumbent_choices = vec![
+            Choice {
+                slot_id: 0,
+                word_id: cat,
+            },
+            Choice {
+                slot_id: 1,
+                word_id: dog,
+            },
+        ];
+        let incumbent_key = canonical_fill_key(&config_ref, &incumbent_choices).unwrap();
+        let mut result = PreferredFillSuccess {
+            fill: FillSuccess {
+                statistics: Statistics::default(),
+                choices: incumbent_choices.clone(),
+            },
+            preferred_word_count: 1,
+            fixed_preferred_word_count: 0,
+            certified_fills: DistinctFillSet::with_fill(incumbent_key),
+        };
+        result
+            .certified_fills
+            .insert(vec![dog, cat].into_boxed_slice());
+
+        assert!(
+            distinct_incumbent_fills(&config_ref, &result, 0).is_empty(),
+            "zero requested grids is empty"
+        );
+
+        let one = distinct_incumbent_fills(&config_ref, &result, 1);
+        assert_eq!(one.len(), 1);
+        assert_eq!(
+            render_grid(&config_ref, &one[0]),
+            render_grid(&config_ref, &incumbent_choices),
+            "count 1 is exactly the classical single fill"
+        );
+
+        let fills = distinct_incumbent_fills(&config_ref, &result, 10);
+        let renders = fills
+            .iter()
+            .map(|choices| render_grid(&config_ref, choices))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            renders,
+            vec!["cat\n...\ndog".to_string(), "dog\n...\ncat".to_string()],
+            "incumbent first, then the other certified fill; the pool caps the count"
+        );
+        assert!(
+            fills
+                .iter()
+                .all(|choices| count_preferred_words(&config_ref, choices)
+                    == result.preferred_word_count),
+            "every emitted fill sits at the incumbent preferred count"
+        );
     }
 
     #[test]

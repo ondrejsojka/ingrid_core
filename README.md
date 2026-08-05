@@ -128,6 +128,10 @@ Options:
           Maximum search time in seconds; 0 waits for a proven optimum [default: 60]
       --search-log <PATH>
           Append scheduler convergence telemetry to this CSV path
+      --grids <GRIDS>
+          Emit up to N distinct certified fills at the best Preferred count found, incumbent first; separated by a blank line on stdout, or one file per grid under --grids-dir [default: 1]
+      --grids-dir <PATH>
+          Write the emitted grids as one file per grid under PATH (grid-1.txt, ...) instead of stdout
       --estimate-variants
           Estimate how many distinct fills are at least as Preferred-heavy as the returned fill
       --estimate-runtime-ratio <ESTIMATE_RUNTIME_RATIO>

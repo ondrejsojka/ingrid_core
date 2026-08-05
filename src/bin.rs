@@ -5,8 +5,8 @@ use ingrid_core::grid_config::{
 };
 use ingrid_core::oracle::{Oracle, OracleOptions, ProbeOptions};
 use ingrid_core::parallel_search::{
-    find_best_fill, find_best_fill_with_observer, prepare_search, SearchEvent, SearchEventKind,
-    SearchEventResult,
+    distinct_incumbent_fills, find_best_fill, find_best_fill_with_observer, prepare_search,
+    SearchEvent, SearchEventKind, SearchEventResult,
 };
 use ingrid_core::variant_estimate::{
     estimate_variants, InconclusiveReason, SamplingDiagnostics, VariantEstimate,
@@ -145,6 +145,15 @@ struct Args {
     /// Append scheduler convergence telemetry to this CSV path
     #[arg(long, value_name = "PATH")]
     search_log: Option<String>,
+
+    /// Emit up to N distinct certified fills at the best Preferred count found, incumbent first;
+    /// separated by a blank line on stdout, or one file per grid under --grids-dir
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u64).range(1..=1000))]
+    grids: u64,
+
+    /// Write the emitted grids as one file per grid under PATH (grid-1.txt, ...) instead of stdout
+    #[arg(long, value_name = "PATH")]
+    grids_dir: Option<String>,
 
     /// Estimate how many distinct fills are at least as Preferred-heavy as the returned fill
     #[arg(long, default_value_t = false)]
@@ -399,6 +408,25 @@ fn main() -> Result<(), Error> {
     }
 }
 
+/// Write one file per emitted grid: grid-1.txt .. grid-<K>.txt, zero-padded so lexical order
+/// matches emission order (incumbent first).
+fn write_grid_files(dir: &str, renders: &[String]) -> Result<(), Error> {
+    fs::create_dir_all(dir)
+        .map_err(|error| Error(format!("Couldn't create grids directory '{dir}': {error}")))?;
+    let width = renders.len().to_string().len();
+    for (index, render) in renders.iter().enumerate() {
+        let path = std::path::Path::new(dir).join(format!("grid-{:0width$}.txt", index + 1));
+        fs::write(&path, format!("{render}\n")).map_err(|error| {
+            Error(format!(
+                "Couldn't write grid to '{}': {error}",
+                path.display()
+            ))
+        })?;
+    }
+    eprintln!("Wrote {} grids to {dir}", renders.len());
+    Ok(())
+}
+
 fn fill_once(args: &Args, normalization: Option<NormalizationSettings>) -> Result<(), Error> {
     let Some(grid_path) = args.grid_path.as_deref() else {
         return Err(Error(
@@ -482,10 +510,24 @@ fn fill_once(args: &Args, normalization: Option<NormalizationSettings>) -> Resul
     let search_elapsed = search_start.elapsed();
     let fill_time = start.elapsed() - word_list_time;
 
-    println!(
-        "{}",
-        render_grid(&config_ref, &result.fill.choices).replace('.', "#")
-    );
+    let fills = distinct_incumbent_fills(&config_ref, &result, args.grids as usize);
+    let renders: Vec<String> = fills
+        .iter()
+        .map(|choices| render_grid(&config_ref, choices).replace('.', "#"))
+        .collect();
+    if renders.len() < args.grids as usize {
+        eprintln!(
+            "Requested {} grids; only {} distinct fill(s) were certified at the optimum ({} preferred words)",
+            args.grids,
+            renders.len(),
+            result.preferred_word_count,
+        );
+    }
+    if let Some(grids_dir) = args.grids_dir.as_deref() {
+        write_grid_files(grids_dir, &renders)?;
+    } else {
+        println!("{}", renders.join("\n\n"));
+    }
 
     if args.estimate_variants {
         let estimate_options = VariantEstimateOptions {
@@ -573,6 +615,12 @@ fn serve(args: &Args, normalization: Option<NormalizationSettings>) -> Result<()
     }
     if args.estimate_variants {
         return Err(Error("--estimate-variants doesn't apply to --serve".into()));
+    }
+    if args.grids != 1 {
+        return Err(Error("--grids doesn't apply to --serve".into()));
+    }
+    if args.grids_dir.is_some() {
+        return Err(Error("--grids-dir doesn't apply to --serve".into()));
     }
     let max_length = args.max_length.unwrap_or(MAX_SLOT_LENGTH);
     if !(2..=MAX_SLOT_LENGTH).contains(&max_length) {

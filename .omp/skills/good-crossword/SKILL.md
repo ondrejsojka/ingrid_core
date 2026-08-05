@@ -76,7 +76,9 @@ class at its source, and both are small:
    or `swedish_grid.py` for a švédská.
 6. **Seed the marquee entries** — `tajenka_place.py`, then `theme_construct.py`. New
    step, and the one that converts count into recognisability. Was not in v1.
-7. Fill — `ingrid_core --preferred-wordlist`. Harvest several seeds.
+7. Fill — `ingrid_core --preferred-wordlist --grids N --grids-dir out/`. One invocation
+   harvests the distinct certified fills; `--seed` reruns are dead (default 0 is
+   byte-identical bait) and `fill_critic.py` grades the files directly.
 8. **Grade the fills** — `fill_critic.py`. Pick on quality, never on count.
 9. **Measure the slack** — `--estimate-variants`. It tells you when to stop harvesting.
 10. Write clues over the whole grid at once, then `clue_check.py`.
@@ -537,7 +539,8 @@ Two more landmines in the same family:
 | `--max-shared-substring` | **4**, not 5 | 5 lets `luzanky` + `luzanek` coexist. 4 blocks that and cost nothing measurable. It still does **not** catch `opat`/`opatem` or `kope`/`kopali`, whose shared run is only 4. |
 | `--dupe-exempt-preferred` | **on** whenever the theme list contains deliberate near-duplicates | Exempts a shared-substring violation when *both* entries are preferred-tier, so `plán`/`plány` and `pokebowl`/`slopbowl` can share a grid while the filler still gets `--max-shared-substring 4`. Whole-word duplicates stay forbidden. Without it the only lever is dropping the constraint globally, which is how junk filler gets in. |
 | `--cores` | 5 was plenty | 8 theme words at 92 s on 5 cores. Ten cores for 1800 s got 9-10 — steeply diminishing. Most of the gain arrives in the first 30-60 s; the tail is one worker grinding at target N+1. |
-| `--timeout` | 600-900 s | Watch `--search-log` incumbent timestamps rather than waiting: on a good grid 7-8 arrive inside 30 s and the rest is tail. |
+| `--timeout` | 600-900 s | On a good grid the winning incumbent arrives inside 30 s and the rest is tail; the tail buys proof and any equal-incumbent races, not a better fill. |
+| `--grids N` | replaces the harvest-several-seeds loop | Emits up to N distinct certified fills at the optimum, incumbent first, deterministic under `--seed`. **Measured caveat:** the search-time certified pool is thin on saturated grids (900 s on the shipped grid certified 1 — the incumbent, found at 7 s; the scheduler cancels everyone at target <= incumbent, so equal-incumbent fills only land from cancellation races). Ask for N, expect what the run certified; the fallback for a real pool is the v1 `--grids-delta` below the optimum, not seed reruns. |
 | `--min-score` | 30 for L3-5, **~22 for L6-L7**, don't bother at L8 | Swept. See "The long-tail sweep" below — worth ~1 theme word, and there is a free win before you touch the bar at all. Beware: the Standard list's scores are cstenten + a canonical bonus, so `--min-score 30` on a rebuilt list silently discards most additions. |
 
 ### Grid choice — second biggest lever, and cheap
@@ -836,11 +839,13 @@ walk in 9 718** reaches a valid leaf, and the survivors are pure tail. That is a
 0.95 is *worse* than 0.98 (ESS 1.2 vs 31.2) despite being nearer. The concentration is
 what makes the estimator work at all.
 
-**The one genuinely useful split, and it was a surprise:** p = 0.80 reached **10 distinct
-certified fills** against 0.98's 7, while being useless at estimating. Enumerating fills
-and estimating their number want opposite settings. So if what you want is the hard lower
-bound, or a *diverse pool of fills to choose from*, run it slack at 0.80 and ignore the
-bits entirely; if you want the estimate, stay at 0.98.
+**The one genuinely useful split, and it was a surprise — and it is now a product.** p =
+0.80 reached **10 distinct certified fills** against 0.98's 7, while being useless at
+estimating; enumerating fills and estimating their number want opposite settings. The
+"diverse pool of fills to choose from" use is no longer a reason to touch this knob:
+`--grids N` emits the certified fills directly, one invocation, gradeable by
+`fill_critic.py`. Run the estimator at 0.98 for the bits (the slack question); the
+certified-fills column remains the hard lower bound on what `--grids` could emit.
 
 **Cosmetic bug, fixed:** when the relative standard error exceeded 1/1.96 the normal
 approximation's lower end went negative and was clamped to `f64::MIN_POSITIVE`, printing
