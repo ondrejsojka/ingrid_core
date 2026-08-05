@@ -1,0 +1,39 @@
+# Brno-anything hand channel, 2026-08. Membership-test first: would a Brno
+# reader recognise the bare word as Brno with the clue covered? Scores are the
+# editorial grade: 200 unmistakable, 171 solid (the tugendhat grade), 150
+# borderline (nationally common or name-bound; the fill may still take them,
+# the clue voice carries the Brno signal at zero search cost).
+# NOT here: words whose only Brno-ness lives in the clue (drak, kolo, tunel,
+# nádraží, výstaviště-adjacent carriers) — those are the clue channel.
+zbrojovka;230
+kometa;200
+starobrno;200
+parnas;200
+anthropos;200
+mendel;200
+koliště;180
+stiassni;171
+jurkovič;171
+löwbeer;171
+morgal;171
+reduta;171
+dornych;171
+ponava;171
+pekařská;160
+lajbl;160
+trojka;150
+era;150
+momenta;150
+sono;150
+# cafes that read as themselves, venue-established (not magazine-attested;
+# the city-magazine archive barely reviews cafes, which is a corpus gap,
+# not a membership gap)
+skog;200
+placzek;200
+zemanova;200
+šalinkarta;200
+# local nicknames the magazine archive cannot attest (it writes official names)
+zelňák;260
+moravák;200
+boby;200
+štětl;200

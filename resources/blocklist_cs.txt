@@ -112,3 +112,19 @@ vole
 zkurvený
 čurák
 čůrat
+
+# fragments and colloquial variants caught by fill_critic / review 2026-08
+obi
+tir
+nhl
+dim
+putt
+taran
+itl
+esp
+sobola
+sobole
+dup
+vyzíval
+vyzívá
+vyzívám

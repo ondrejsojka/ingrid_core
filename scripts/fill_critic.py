@@ -114,8 +114,12 @@ def strip_accents(word: str) -> str:
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
 
 
-def load_dict(path: Path) -> dict[str, int]:
-    """word;score dictionary. Keys stored diacritic-stripped, lowercase."""
+def load_dict(path: Path, strip: bool = True) -> dict[str, int]:
+    """word;score dictionary. Keys lowercase; diacritic-stripped by default.
+
+    ``strip=False`` keeps exact keys, which is what the preferred tier needs:
+    the engine counts preferred by exact normalized string, and folding there
+    over-credits oblique variants of theme names (``moú`` ≢ ``mou``)."""
     out: dict[str, int] = {}
     for line in path.open(encoding="utf-8"):
         line = line.strip()
@@ -126,7 +130,7 @@ def load_dict(path: Path) -> dict[str, int]:
             value = int(score)
         except ValueError:
             value = 0
-        key = strip_accents(word.lower())
+        key = strip_accents(word.lower()) if strip else word.lower()
         if key not in out or value > out[key]:
             out[key] = value
     return out
@@ -369,7 +373,7 @@ def main() -> int:
     standard: dict[str, int] = {}
     for path in args.wordlist:
         standard.update(load_dict(path))
-    preferred_dict = load_dict(args.preferred) if args.preferred else {}
+    preferred_dict = load_dict(args.preferred, strip=False) if args.preferred else {}
     report_lemmas = load_expand_report(args.expand_report)
     reference = load_dict(args.reference) if args.reference else {}
 
@@ -459,12 +463,13 @@ def main() -> int:
     ascii_suffixes = tuple(strip_accents(s) for s in RELATIONAL_SUFFIXES)
     for e in entries:
         text = strip_accents(e["text"].lower())
+        exact_text = e["text"].lower()
         ref = reference.get(text, 0)
         flags: list[str] = []
         defects: list[str] = []
         risks: list[str] = []
 
-        if args.preferred and text in preferred_dict:
+        if args.preferred and exact_text in preferred_dict:
             tier = "preferred"
             preferred_mids.append(e["midpoint"])
         elif text in standard:
@@ -556,7 +561,7 @@ def main() -> int:
     recognizable = sum(
         1
         for e in entries
-        if strip_accents(e["text"].lower()) in preferred_dict
+        if e["text"].lower() in preferred_dict
         and strip_accents(e["text"].lower()) not in defect_words
     )
     xword_density = crosswordese_count / n if n else 0.0
