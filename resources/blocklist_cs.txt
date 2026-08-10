@@ -128,3 +128,5 @@ dup
 vyzíval
 vyzívá
 vyzívám
+areny
+krak
