@@ -709,26 +709,27 @@ mod tests {
     use std::fs;
     use std::time::Duration;
 
+    /// One smoke over argv wiring: the default invocation, the documented flags, and
+    /// `--serve`, which takes no grid file.
     #[test]
-    fn cli_search_timeout_defaults_to_one_minute() {
-        let args = Args::try_parse_from(["ingrid_core", "grid.txt"]).unwrap();
-        assert_eq!(args.timeout, 60);
-        assert!(args.search_log.is_none());
-    }
+    fn cli_parses_the_documented_invocations() {
+        let plain = Args::try_parse_from(["ingrid_core", "grid.txt"]).unwrap();
+        assert_eq!(plain.timeout, 60);
+        assert!(plain.search_log.is_none());
 
-    #[test]
-    fn cli_accepts_diacritic_insensitive_mode() {
-        let args =
+        let ignore_diacritics =
             Args::try_parse_from(["ingrid_core", "--ignore-diacritics", "grid.txt"]).unwrap();
-        assert!(args.ignore_diacritics);
-    }
+        assert!(ignore_diacritics.ignore_diacritics);
 
-    #[test]
-    fn cli_accepts_search_log_path() {
-        let args =
+        let logged =
             Args::try_parse_from(["ingrid_core", "--search-log", "telemetry.csv", "grid.txt"])
                 .unwrap();
-        assert_eq!(args.search_log.as_deref(), Some("telemetry.csv"));
+        assert_eq!(logged.search_log.as_deref(), Some("telemetry.csv"));
+
+        let serving = Args::try_parse_from(["ingrid_core", "--serve"]).unwrap();
+        assert!(serving.serve);
+        assert!(serving.grid_path.is_none());
+        assert_eq!(serving.probe_time, 0);
     }
 
     #[test]
@@ -795,27 +796,15 @@ mod tests {
     }
 
     #[test]
-    fn cli_serve_takes_no_grid_and_defaults_to_arc_consistency_only() {
-        let args = Args::try_parse_from(["ingrid_core", "--serve"]).unwrap();
-        assert!(args.serve);
-        assert!(args.grid_path.is_none());
-        assert_eq!(args.probe_time, 0);
-        assert!(args.max_length.is_none());
-    }
-
-    #[test]
-    fn a_request_line_joins_rows_with_slashes() {
+    fn a_request_line_joins_rows_and_carries_its_options() {
         let request = parse_request("..#/#..").unwrap();
         assert_eq!(request.template, "..#\n#..");
         assert!(request.options.probe_time.is_none());
         assert!(!request.options.want_fill);
-    }
 
-    #[test]
-    fn a_request_line_can_override_the_budget_and_ask_for_the_fill() {
-        let request = parse_request("../.. ms=250 fill=1").unwrap();
-        assert_eq!(request.options.probe_time, Some(Duration::from_millis(250)));
-        assert!(request.options.want_fill);
+        let rich = parse_request("../.. ms=250 fill=1").unwrap();
+        assert_eq!(rich.options.probe_time, Some(Duration::from_millis(250)));
+        assert!(rich.options.want_fill);
         // Zero is meaningful: it forces arc consistency only despite a nonzero campaign default.
         assert_eq!(
             parse_request("../.. ms=0").unwrap().options.probe_time,

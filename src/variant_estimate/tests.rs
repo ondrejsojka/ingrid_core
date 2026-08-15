@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use super::walk::{collect_walks, RankProposal, WalkOutcome};
@@ -9,50 +8,32 @@ use super::{
 use crate::backtracking_search::{FillSuccess, Statistics};
 use crate::fill_set::DistinctFillSet;
 use crate::grid_config::{generate_grid_config_from_template_string, Choice, GridConfig};
-use crate::parallel_search::{canonical_fill_key, prepare_search, PreferredFillSuccess};
+use crate::parallel_search::{
+    canonical_fill_key, prepare_search, PreferredFillSuccess, PreparedSearch,
+};
+use crate::test_support::{tiered_word_list, tiered_word_list_with_limit, word_id};
 use crate::types::WordId;
-use crate::word_list::{WordList, WordListSourceConfig, WordListSourceConfigProvider};
+use crate::word_list::WordList;
 
-fn source(id: &str, words: &[&str]) -> WordListSourceConfig {
-    WordListSourceConfig {
-        id: id.into(),
-        enabled: true,
-        provider: WordListSourceConfigProvider::Memory {
-            words: words.iter().map(|word| ((*word).into(), 50)).collect(),
-        },
-        normalization: None,
+/// The `cat`/`dog` fixture: a tiered list laid over `template`, plus the prepared search
+/// and the word list for id lookups, all tied together for the duration of `body`.
+fn cat_dog_grid<R>(
+    template: &str,
+    body: impl FnOnce(&GridConfig, &PreparedSearch, &WordList) -> R,
+) -> R {
+    let mut list = tiered_word_list(&["cat"], &["dog"]);
+    let config = generate_grid_config_from_template_string(&mut list, template, 0)
+        .expect("test template is valid");
+    let config_ref = config.to_config_ref();
+    let prepared = prepare_search(&config_ref).unwrap();
+    body(&config_ref, &prepared, config.word_list)
+}
+
+fn choice(slot_id: usize, word_list: &WordList, word: &str) -> Choice {
+    Choice {
+        slot_id,
+        word_id: word_id(word_list, word),
     }
-}
-
-fn word_list_with_shared_limit(
-    preferred: &[&str],
-    standard: &[&str],
-    max_shared_substring: Option<usize>,
-) -> WordList {
-    let max_length = preferred
-        .iter()
-        .chain(standard)
-        .map(|word| word.chars().count())
-        .max();
-    let mut list = WordList::new(
-        vec![source("preferred", preferred), source("standard", standard)],
-        None,
-        max_length,
-        max_shared_substring,
-    );
-    list.set_preferred_source_ids(HashSet::from(["preferred".into()]));
-    list
-}
-
-fn word_list(preferred: &[&str], standard: &[&str]) -> WordList {
-    word_list_with_shared_limit(preferred, standard, None)
-}
-
-fn word_id(word_list: &WordList, word: &str) -> usize {
-    *word_list
-        .word_id_by_string
-        .get(word)
-        .expect("fixture word should exist")
 }
 
 fn incumbent(choices: Vec<Choice>, preferred_word_count: usize) -> PreferredFillSuccess {
@@ -92,7 +73,7 @@ fn options(walk_count: usize, seed: u64) -> VariantEstimateOptions {
 /// estimator's wave loop does.
 fn cohort_waves(
     config: &GridConfig,
-    prepared: &crate::parallel_search::PreparedSearch,
+    prepared: &PreparedSearch,
     incumbent: &PreferredFillSuccess,
     waves: &[usize],
     seed: u64,
@@ -126,7 +107,7 @@ fn cohort_waves(
 
 fn fixed_cohort(
     config: &GridConfig,
-    prepared: &crate::parallel_search::PreparedSearch,
+    prepared: &PreparedSearch,
     incumbent: &PreferredFillSuccess,
     walk_count: usize,
     seed: u64,
@@ -189,103 +170,54 @@ fn assert_identical_estimates(first: &VariantEstimateOutcome, second: &VariantEs
 }
 
 #[test]
-fn fully_fixed_grid_has_exactly_one_fill() {
-    let mut word_list = word_list(&["cat"], &["dog"]);
-    let config = generate_grid_config_from_template_string(&mut word_list, "cat\n", 0)
-        .expect("test template is valid");
-    let config_ref = config.to_config_ref();
-    let prepared = prepare_search(&config_ref).unwrap();
-    let result = incumbent(
-        vec![Choice {
-            slot_id: 0,
-            word_id: word_id(config.word_list, "cat"),
-        }],
-        1,
-    );
-    let estimate = estimate_variants(
-        &config_ref,
-        &prepared,
-        &result,
-        Duration::from_secs(10),
-        &options(64, 1),
-    );
-    assert!(matches!(
-        estimate.outcome,
-        VariantEstimateOutcome::Exact { count: 1 }
-    ));
+fn exact_counts_for_fully_fixed_and_impossible_thresholds() {
+    // A grid whose only slot is already pinned has exactly one fill; a preferred threshold
+    // no fill can meet has exactly zero. Both are certified without any sampling.
+    let cases: [(&str, usize, u64); 2] = [("cat\n", 1, 1), ("...\n", 2, 0)];
+    for (template, preferred_count, expected) in cases {
+        cat_dog_grid(template, |config, prepared, words| {
+            let result = incumbent(vec![choice(0, words, "cat")], preferred_count);
+            let estimate = estimate_variants(
+                config,
+                prepared,
+                &result,
+                Duration::from_secs(10),
+                &options(64, 1),
+            );
+            assert!(
+                matches!(estimate.outcome, VariantEstimateOutcome::Exact { count } if count == expected),
+                "{template}"
+            );
+        });
+    }
 }
 
 #[test]
-fn impossible_preferred_threshold_has_exactly_zero_fills() {
-    let mut word_list = word_list(&["cat"], &["dog"]);
-    let config = generate_grid_config_from_template_string(&mut word_list, "...\n", 0)
-        .expect("test template is valid");
-    let config_ref = config.to_config_ref();
-    let prepared = prepare_search(&config_ref).unwrap();
-    let result = incumbent(
-        vec![Choice {
-            slot_id: 0,
-            word_id: word_id(config.word_list, "cat"),
-        }],
-        2,
-    );
-    let estimate = estimate_variants(
-        &config_ref,
-        &prepared,
-        &result,
-        Duration::from_secs(10),
-        &options(64, 2),
-    );
-    assert!(matches!(
-        estimate.outcome,
-        VariantEstimateOutcome::Exact { count: 0 }
-    ));
-}
+fn cohorts_estimate_the_dupe_constrained_fill_count() {
+    // Two independent slots over two words have exactly two fills — the mirrored
+    // assignments — because the engine forbids reusing a word within a grid.
+    cat_dog_grid("...#...\n", |config, prepared, words| {
+        let result = incumbent(vec![choice(0, words, "cat"), choice(1, words, "dog")], 0);
+        let batch = fixed_cohort(config, prepared, &result, 4_096, 3, 2);
+        let VariantEstimateOutcome::Estimated { count, .. } = super::cohort_outcome(&batch, 1)
+        else {
+            panic!("expected a numerical estimate");
+        };
+        assert!((count - 2.0).abs() < 0.1, "count was {count}");
+    });
 
-#[test]
-fn disconnected_slots_estimate_duplicate_constrained_count() {
-    let mut word_list = word_list(&["cat"], &["dog"]);
-    let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
+    // Shared-substring rejections are refused by the walk itself, so they never contribute
+    // as leaves: stone/stony cannot coexist, and each five-letter slot keeps both of its
+    // non-conflicting options, doubling the constrained count.
+    let mut list = tiered_word_list_with_limit(&[], &["stone", "stony", "spear"], Some(3));
+    let config = generate_grid_config_from_template_string(&mut list, ".....#.....\n", 0)
         .expect("test template is valid");
     let config_ref = config.to_config_ref();
     let prepared = prepare_search(&config_ref).unwrap();
     let result = incumbent(
         vec![
-            Choice {
-                slot_id: 0,
-                word_id: word_id(config.word_list, "cat"),
-            },
-            Choice {
-                slot_id: 1,
-                word_id: word_id(config.word_list, "dog"),
-            },
-        ],
-        0,
-    );
-    let batch = fixed_cohort(&config_ref, &prepared, &result, 4_096, 3, 2);
-    let VariantEstimateOutcome::Estimated { count, .. } = super::cohort_outcome(&batch, 1) else {
-        panic!("expected a numerical estimate");
-    };
-    assert!((count - 2.0).abs() < 0.1, "count was {count}");
-}
-
-#[test]
-fn shared_substring_rejections_never_contribute_as_leaves() {
-    let mut word_list = word_list_with_shared_limit(&[], &["stone", "stony", "spear"], Some(3));
-    let config = generate_grid_config_from_template_string(&mut word_list, ".....#.....\n", 0)
-        .expect("test template is valid");
-    let config_ref = config.to_config_ref();
-    let prepared = prepare_search(&config_ref).unwrap();
-    let result = incumbent(
-        vec![
-            Choice {
-                slot_id: 0,
-                word_id: word_id(config.word_list, "stone"),
-            },
-            Choice {
-                slot_id: 1,
-                word_id: word_id(config.word_list, "spear"),
-            },
+            choice(0, config.word_list, "stone"),
+            choice(1, config.word_list, "spear"),
         ],
         0,
     );
@@ -303,297 +235,137 @@ fn shared_substring_rejections_never_contribute_as_leaves() {
 }
 
 #[test]
-fn fixed_seed_is_reproducible_across_worker_counts() {
-    let mut word_list = word_list(&["cat"], &["dog"]);
-    let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
-        .expect("test template is valid");
-    let config_ref = config.to_config_ref();
-    let prepared = prepare_search(&config_ref).unwrap();
-    let result = incumbent(
-        vec![
-            Choice {
-                slot_id: 0,
-                word_id: word_id(config.word_list, "cat"),
-            },
-            Choice {
-                slot_id: 1,
-                word_id: word_id(config.word_list, "dog"),
-            },
-        ],
-        0,
-    );
-    let first = super::cohort_outcome(
-        &fixed_cohort(&config_ref, &prepared, &result, 1_024, 99, 1),
-        1,
-    );
-    let second = super::cohort_outcome(
-        &fixed_cohort(&config_ref, &prepared, &result, 1_024, 99, 4),
-        1,
-    );
-    assert_identical_estimates(&first, &second);
-}
-
-#[test]
 fn wave_split_cohorts_match_the_single_wave_cohort() {
-    let mut word_list = word_list(&["cat"], &["dog"]);
-    let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
-        .expect("test template is valid");
-    let config_ref = config.to_config_ref();
-    let prepared = prepare_search(&config_ref).unwrap();
-    let result = incumbent(
-        vec![
-            Choice {
-                slot_id: 0,
-                word_id: word_id(config.word_list, "cat"),
-            },
-            Choice {
-                slot_id: 1,
-                word_id: word_id(config.word_list, "dog"),
-            },
-        ],
-        0,
-    );
+    cat_dog_grid("...#...\n", |config_ref, prepared, words| {
+        let result = incumbent(vec![choice(0, words, "cat"), choice(1, words, "dog")], 0);
 
-    // Explicit wave boundaries: walk i keeps its own stream, so both cohorts agree walk by walk.
-    let single = fixed_cohort(&config_ref, &prepared, &result, 900, 17, 2);
-    let split = cohort_waves(&config_ref, &prepared, &result, &[16, 284, 600], 17, 2);
-    assert_eq!(walk_keys(&single), walk_keys(&split));
-    assert_identical_estimates(
-        &super::cohort_outcome(&single, 1),
-        &super::cohort_outcome(&split, 1),
-    );
+        // Explicit wave boundaries: walk i keeps its own stream, so both cohorts agree walk by walk.
+        let single = fixed_cohort(config_ref, prepared, &result, 900, 17, 2);
+        let split = cohort_waves(config_ref, prepared, &result, &[16, 284, 600], 17, 2);
+        assert_eq!(walk_keys(&single), walk_keys(&split));
+        assert_identical_estimates(
+            &super::cohort_outcome(&single, 1),
+            &super::cohort_outcome(&split, 1),
+        );
 
-    // The estimator's own wave loop: whatever split the clock produces, the union is still the
-    // cohort a single call of that size would have drawn.
-    let incumbent_words =
-        canonical_fill_key(&config_ref, &result.fill.choices).expect("complete incumbent");
-    let proposal = RankProposal::new(
-        config_ref
-            .slot_options
-            .iter()
-            .map(Vec::len)
-            .max()
-            .unwrap_or(0),
-        0.8,
-    );
-    let context = super::WalkContext {
-        config: &config_ref,
-        root: &prepared.root,
-        minimum_preferred_words: result.preferred_word_count,
-        incumbent_words: &incumbent_words,
-        worker_count: 2,
-        rng_seed: 17,
-    };
-    let waved = super::collect_cohort_waves(
-        &context,
-        &proposal,
-        8,
-        4_096,
-        Instant::now() + Duration::from_millis(500),
-    );
-    assert!(
-        waved.len() > 8,
-        "the remaining budget should have funded another wave, got {} walks",
-        waved.len()
-    );
-    let refilled = fixed_cohort(&config_ref, &prepared, &result, waved.len(), 17, 2);
-    assert_eq!(walk_keys(&waved), walk_keys(&refilled));
-    assert_identical_estimates(
-        &super::cohort_outcome(&waved, 1),
-        &super::cohort_outcome(&refilled, 1),
-    );
+        // The estimator's own wave loop: whatever split the clock produces, the union is still the
+        // cohort a single call of that size would have drawn.
+        let incumbent_words =
+            canonical_fill_key(config_ref, &result.fill.choices).expect("complete incumbent");
+        let proposal = RankProposal::new(
+            config_ref
+                .slot_options
+                .iter()
+                .map(Vec::len)
+                .max()
+                .unwrap_or(0),
+            0.8,
+        );
+        let context = super::WalkContext {
+            config: config_ref,
+            root: &prepared.root,
+            minimum_preferred_words: result.preferred_word_count,
+            incumbent_words: &incumbent_words,
+            worker_count: 2,
+            rng_seed: 17,
+        };
+        let waved = super::collect_cohort_waves(
+            &context,
+            &proposal,
+            8,
+            4_096,
+            Instant::now() + Duration::from_millis(500),
+        );
+        assert!(
+            waved.len() > 8,
+            "the remaining budget should have funded another wave, got {} walks",
+            waved.len()
+        );
+        let refilled = fixed_cohort(config_ref, prepared, &result, waved.len(), 17, 2);
+        assert_eq!(walk_keys(&waved), walk_keys(&refilled));
+        assert_identical_estimates(
+            &super::cohort_outcome(&waved, 1),
+            &super::cohort_outcome(&refilled, 1),
+        );
+    });
 }
 
 #[test]
-fn canonical_search_evidence_survives_without_sampling() {
-    let mut word_list = word_list(&["cat"], &["dog"]);
-    let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
-        .expect("test template is valid");
-    let config_ref = config.to_config_ref();
-    let reversed_choices = vec![
-        Choice {
-            slot_id: 1,
-            word_id: word_id(config.word_list, "dog"),
-        },
-        Choice {
-            slot_id: 0,
-            word_id: word_id(config.word_list, "cat"),
-        },
-    ];
-    let mut result = incumbent(reversed_choices.clone(), 0);
-    assert_eq!(
-        canonical_fill_key(&config_ref, &reversed_choices),
-        Some(
-            vec![
-                word_id(config.word_list, "cat"),
-                word_id(config.word_list, "dog")
-            ]
-            .into_boxed_slice()
-        )
-    );
-    result.certified_fills.insert(
-        vec![
-            word_id(config.word_list, "dog"),
-            word_id(config.word_list, "cat"),
-        ]
-        .into_boxed_slice(),
-    );
-    assert_eq!(result.certified_fills.len(), 2);
-    let mut configured = options(16, 4);
-    configured.runtime_ratio = 0.0;
-    let estimate = estimate_variants(
-        &config_ref,
-        &prepare_search(&config_ref).unwrap(),
-        &result,
-        Duration::from_secs(1),
-        &configured,
-    );
-    assert_eq!(estimate.known_distinct_fills, 2);
-    assert!(matches!(
-        estimate.outcome,
-        VariantEstimateOutcome::Inconclusive {
-            reason: InconclusiveReason::InsufficientBudget,
-            ..
-        }
-    ));
-}
+fn certified_evidence_survives_the_estimator_without_sampling() {
+    // With no sampling budget the certified lower bound is all the estimator can report,
+    // and it must survive the estimator's internal rebuild — including the "more fills
+    // existed than fit" marker.
+    cat_dog_grid("...#...\n", |config, prepared, words| {
+        let reversed = vec![choice(1, words, "dog"), choice(0, words, "cat")];
+        let (cat, dog) = (word_id(words, "cat"), word_id(words, "dog"));
+        assert_eq!(
+            canonical_fill_key(config, &reversed),
+            Some(vec![cat, dog].into_boxed_slice())
+        );
+        let mut result = incumbent(reversed, 0);
+        result
+            .certified_fills
+            .insert(vec![dog, cat].into_boxed_slice());
+        assert_eq!(result.certified_fills.len(), 2);
+        let mut zero_budget = options(16, 4);
+        zero_budget.runtime_ratio = 0.0;
+        let estimate = estimate_variants(
+            config,
+            prepared,
+            &result,
+            Duration::from_secs(1),
+            &zero_budget,
+        );
+        assert_eq!(estimate.known_distinct_fills, 2);
+        assert!(matches!(
+            estimate.outcome,
+            VariantEstimateOutcome::Inconclusive {
+                reason: InconclusiveReason::InsufficientBudget,
+                ..
+            }
+        ));
 
-#[test]
-fn capped_certified_evidence_marks_the_estimate_capped() {
-    // The certified-evidence marker must survive the estimator rebuilding its known-fill set,
-    // even when the budget gate stops the estimator before any walk runs.
-    let mut word_list = word_list(&["cat"], &["dog"]);
-    let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
-        .expect("test template is valid");
-    let config_ref = config.to_config_ref();
-    let mut result = incumbent(
-        vec![
-            Choice {
-                slot_id: 0,
-                word_id: word_id(config.word_list, "cat"),
-            },
-            Choice {
-                slot_id: 1,
-                word_id: word_id(config.word_list, "dog"),
-            },
-        ],
-        0,
-    );
-    result.certified_fills.mark_capped();
-    let mut configured = options(16, 4);
-    configured.runtime_ratio = 0.0;
-    let estimate = estimate_variants(
-        &config_ref,
-        &prepare_search(&config_ref).unwrap(),
-        &result,
-        Duration::from_secs(1),
-        &configured,
-    );
-    assert!(matches!(
-        estimate.outcome,
-        VariantEstimateOutcome::Inconclusive {
-            reason: InconclusiveReason::InsufficientBudget,
-            ..
-        }
-    ));
-    assert!(estimate.known_distinct_fills_capped);
-}
-
-#[test]
-fn canonical_fill_key_rejects_duplicate_or_missing_slots() {
-    let mut word_list = word_list(&["cat"], &["dog"]);
-    let config = generate_grid_config_from_template_string(&mut word_list, "...#...\n", 0)
-        .expect("test template is valid");
-    let config_ref = config.to_config_ref();
-    let cat = word_id(config.word_list, "cat");
-    let dog = word_id(config.word_list, "dog");
-    let shuffled = vec![
-        Choice {
-            slot_id: 1,
-            word_id: dog,
-        },
-        Choice {
-            slot_id: 0,
-            word_id: cat,
-        },
-    ];
-    assert_eq!(
-        canonical_fill_key(&config_ref, &shuffled),
-        Some(vec![cat, dog].into_boxed_slice())
-    );
-    assert_eq!(
-        canonical_fill_key(
-            &config_ref,
-            &[
-                Choice {
-                    slot_id: 0,
-                    word_id: cat,
-                },
-                Choice {
-                    slot_id: 0,
-                    word_id: dog,
-                },
-            ],
-        ),
-        None
-    );
-    assert_eq!(
-        canonical_fill_key(
-            &config_ref,
-            &[Choice {
-                slot_id: 0,
-                word_id: cat,
-            }],
-        ),
-        None
-    );
+        result.certified_fills.mark_capped();
+        let estimate = estimate_variants(
+            config,
+            prepared,
+            &result,
+            Duration::from_secs(1),
+            &zero_budget,
+        );
+        assert!(matches!(
+            estimate.outcome,
+            VariantEstimateOutcome::Inconclusive {
+                reason: InconclusiveReason::InsufficientBudget,
+                ..
+            }
+        ));
+        assert!(estimate.known_distinct_fills_capped);
+    });
 }
 
 #[test]
 fn invalid_options_are_reported_without_sampling() {
-    let mut word_list = word_list(&["cat"], &["dog"]);
-    let config = generate_grid_config_from_template_string(&mut word_list, "...\n", 0)
-        .expect("test template is valid");
-    let config_ref = config.to_config_ref();
-    let prepared = prepare_search(&config_ref).unwrap();
-    let result = incumbent(
-        vec![Choice {
-            slot_id: 0,
-            word_id: word_id(config.word_list, "cat"),
-        }],
-        1,
-    );
-    let mut configured = options(64, 0);
-    configured.guide_probability = f64::NAN;
-    let estimate = estimate_variants(
-        &config_ref,
-        &prepared,
-        &result,
-        Duration::from_secs(1),
-        &configured,
-    );
-    assert!(matches!(
-        estimate.outcome,
-        VariantEstimateOutcome::Inconclusive {
-            reason: InconclusiveReason::InvalidOptions,
-            sampling: None,
+    cat_dog_grid("...\n", |config, prepared, words| {
+        let result = incumbent(vec![choice(0, words, "cat")], 1);
+        let mut configured = options(64, 0);
+        for guide_probability in [f64::NAN, 1.0] {
+            configured.guide_probability = guide_probability;
+            let estimate = estimate_variants(
+                config,
+                prepared,
+                &result,
+                Duration::from_secs(1),
+                &configured,
+            );
+            let VariantEstimateOutcome::Inconclusive { reason, sampling } = &estimate.outcome
+            else {
+                panic!("guide_probability {guide_probability} should be rejected");
+            };
+            assert_eq!(*reason, InconclusiveReason::InvalidOptions);
+            assert!(sampling.is_none(), "no walk may run on invalid options");
         }
-    ));
-    configured.guide_probability = 1.0;
-    let estimate = estimate_variants(
-        &config_ref,
-        &prepared,
-        &result,
-        Duration::from_secs(1),
-        &configured,
-    );
-    assert!(matches!(
-        estimate.outcome,
-        VariantEstimateOutcome::Inconclusive {
-            reason: InconclusiveReason::InvalidOptions,
-            ..
-        }
-    ));
+    });
 }
 #[test]
 fn runtime_budget_is_capped_by_ratio_and_absolute_limit() {

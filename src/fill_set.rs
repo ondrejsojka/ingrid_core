@@ -89,17 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn insertion_past_the_cap_marks_the_set_capped() {
-        let mut set = DistinctFillSet::new();
-        for index in 0..=MAX_DISTINCT_FILLS {
-            set.insert(vec![index].into_boxed_slice());
-        }
-        assert_eq!(set.len(), MAX_DISTINCT_FILLS);
-        assert!(set.capped());
-    }
-
-    #[test]
-    fn cap_ignores_duplicates_of_retained_fills() {
+    fn insertion_past_the_cap_marks_the_set_capped_but_duplicates_do_not() {
         let mut set = DistinctFillSet::new();
         for index in 0..MAX_DISTINCT_FILLS {
             set.insert(vec![index].into_boxed_slice());
@@ -108,6 +98,7 @@ mod tests {
         set.insert(vec![0].into_boxed_slice());
         assert!(!set.capped());
         set.insert(vec![MAX_DISTINCT_FILLS].into_boxed_slice());
+        assert_eq!(set.len(), MAX_DISTINCT_FILLS);
         assert!(set.capped());
     }
 }

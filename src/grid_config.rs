@@ -982,10 +982,6 @@ mod template_tests {
             ParsedTemplate::parse("   ").unwrap_err(),
             TemplateError::NoRows
         );
-    }
-
-    #[test]
-    fn ragged_rows_name_the_offending_row() {
         assert_eq!(
             ParsedTemplate::parse("...\n...\n....").unwrap_err(),
             TemplateError::RaggedRows {

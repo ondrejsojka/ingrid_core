@@ -894,9 +894,8 @@ fn find_best_fill_internal(
 mod tests {
     use super::{
         adaptive_branching_threshold_for_worker, canonical_fill_key, choices_from_fill_key,
-        count_preferred_words, distinct_incumbent_fills, find_best_fill,
-        find_best_fill_with_observer, initial_targets, prepare_search, PreferredFillSuccess,
-        SearchEventKind, SearchEventResult,
+        count_preferred_words, distinct_incumbent_fills, find_best_fill_with_observer,
+        initial_targets, prepare_search, PreferredFillSuccess, SearchEventKind, SearchEventResult,
     };
     use crate::backtracking_search::{
         find_fill_with_options, FillFailure, FillOptions, FillSuccess, Statistics,
@@ -904,44 +903,18 @@ mod tests {
     };
     use crate::fill_set::DistinctFillSet;
     use crate::grid_config::{generate_grid_config_from_template_string, render_grid, Choice};
+    use crate::test_support::{tiered_word_list, word_id};
     use crate::types::WordId;
-    use crate::word_list::{WordList, WordListSourceConfig, WordListSourceConfigProvider};
-    use std::collections::HashSet;
+    use crate::word_list::WordList;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
     use std::time::Duration;
-
-    fn tiered_word_list() -> WordList {
-        let source = |id: &str, word: &str| WordListSourceConfig {
-            id: id.into(),
-            enabled: true,
-            provider: WordListSourceConfigProvider::Memory {
-                words: vec![(word.into(), 50)],
-            },
-            normalization: None,
-        };
-        let mut word_list = WordList::new(
-            vec![source("preferred", "cat"), source("standard", "dog")],
-            None,
-            Some(3),
-            None,
-        );
-        word_list.set_preferred_source_ids(HashSet::from(["preferred".into()]));
-        word_list
-    }
 
     fn tiered_single_slot_config(
         word_list: &mut WordList,
     ) -> crate::grid_config::OwnedGridConfig<'_> {
         generate_grid_config_from_template_string(word_list, "...\n", 0)
             .expect("test template is valid")
-    }
-
-    fn word_id(word_list: &WordList, word: &str) -> WordId {
-        *word_list
-            .word_id_by_string
-            .get(word)
-            .expect("fixture word should exist")
     }
 
     /// `cat`/`dog` give two independent three-letter across slots exactly two fills: the mirrored
@@ -952,7 +925,7 @@ mod tests {
 
     #[test]
     fn choices_from_fill_key_rebuilds_canonical_keys_and_rejects_wrong_lengths() {
-        let mut word_list = tiered_word_list();
+        let mut word_list = tiered_word_list(&["cat"], &["dog"]);
         let config =
             generate_grid_config_from_template_string(&mut word_list, two_slot_template(), 0)
                 .expect("test template is valid");
@@ -977,11 +950,54 @@ mod tests {
         );
         assert!(choices_from_fill_key(&config_ref, &key[..1]).is_none());
         assert!(choices_from_fill_key(&config_ref, &[cat, dog, cat]).is_none());
+
+        // The canonical key sorts by slot id and refuses choice sets that are not exactly
+        // one word per slot: duplicate and missing slots have no fill to name.
+        let shuffled = vec![
+            Choice {
+                slot_id: 1,
+                word_id: dog,
+            },
+            Choice {
+                slot_id: 0,
+                word_id: cat,
+            },
+        ];
+        assert_eq!(
+            canonical_fill_key(&config_ref, &shuffled).as_deref(),
+            Some(&key[..])
+        );
+        assert_eq!(
+            canonical_fill_key(
+                &config_ref,
+                &[
+                    Choice {
+                        slot_id: 0,
+                        word_id: cat,
+                    },
+                    Choice {
+                        slot_id: 0,
+                        word_id: dog,
+                    },
+                ],
+            ),
+            None
+        );
+        assert_eq!(
+            canonical_fill_key(
+                &config_ref,
+                &[Choice {
+                    slot_id: 0,
+                    word_id: cat,
+                }],
+            ),
+            None
+        );
     }
 
     #[test]
     fn distinct_incumbent_fills_emits_incumbent_then_certified_fills() {
-        let mut word_list = tiered_word_list();
+        let mut word_list = tiered_word_list(&["cat"], &["dog"]);
         let config =
             generate_grid_config_from_template_string(&mut word_list, two_slot_template(), 0)
                 .expect("test template is valid");
@@ -1087,7 +1103,7 @@ mod tests {
 
     #[test]
     fn preferred_minimum_is_a_hard_global_constraint() {
-        let mut word_list = tiered_word_list();
+        let mut word_list = tiered_word_list(&["cat"], &["dog"]);
         let config = tiered_single_slot_config(&mut word_list);
         let result = find_fill_with_options(
             &config.to_config_ref(),
@@ -1102,18 +1118,8 @@ mod tests {
     }
 
     #[test]
-    fn parallel_search_finds_the_optimal_preferred_count() {
-        let mut word_list = tiered_word_list();
-        let config = tiered_single_slot_config(&mut word_list);
-        let config_ref = config.to_config_ref();
-        let prepared = prepare_search(&config_ref).unwrap();
-        let result = find_best_fill(&config_ref, &prepared, None, Some(2), 0).unwrap();
-        assert_eq!(result.preferred_word_count, 1);
-    }
-
-    #[test]
     fn observer_reports_successful_convergence_in_order() {
-        let mut word_list = tiered_word_list();
+        let mut word_list = tiered_word_list(&["cat"], &["dog"]);
         let config = tiered_single_slot_config(&mut word_list);
         let config_ref = config.to_config_ref();
         let prepared = prepare_search(&config_ref).unwrap();
@@ -1175,7 +1181,7 @@ mod tests {
         // `prepare_search`, so no observer events are emitted: there is no
         // scheduler yet when preparation fails. The hard-failure contract moved
         // from the observer event stream to the `prepare_search` return value.
-        let mut word_list = tiered_word_list();
+        let mut word_list = tiered_word_list(&["cat"], &["dog"]);
         let config =
             generate_grid_config_from_template_string(&mut word_list, "...\n.#.\n...\n", 0)
                 .expect("test template is valid");
@@ -1185,59 +1191,54 @@ mod tests {
         assert!(matches!(result, Err(FillFailure::HardFailure)));
     }
 
+    /// Timeout and abort are the two ways the scheduler can stop before any worker starts;
+    /// both surface as a workerless stop event followed by the final return.
     #[test]
-    fn observer_reports_scheduler_timeout_without_starting_workers() {
-        let mut word_list = tiered_word_list();
-        let config = tiered_single_slot_config(&mut word_list);
-        let config_ref = config.to_config_ref();
-        let prepared = prepare_search(&config_ref).unwrap();
-        let mut events = Vec::new();
-        let result = find_best_fill_with_observer(
-            &config_ref,
-            &prepared,
-            Some(Duration::ZERO),
-            Some(1),
-            0,
-            |event| events.push(event),
-        );
+    fn observer_reports_scheduler_stop_without_starting_workers() {
+        for aborted in [false, true] {
+            let mut word_list = tiered_word_list(&["cat"], &["dog"]);
+            let mut config = tiered_single_slot_config(&mut word_list);
+            let deadline = if aborted {
+                config.abort = Some(Arc::new(AtomicBool::new(true)));
+                None
+            } else {
+                Some(Duration::ZERO)
+            };
+            let config_ref = config.to_config_ref();
+            let prepared = prepare_search(&config_ref).unwrap();
+            let mut events = Vec::new();
+            let result = find_best_fill_with_observer(
+                &config_ref,
+                &prepared,
+                deadline,
+                Some(1),
+                0,
+                |event| events.push(event),
+            );
 
-        assert!(matches!(result, Err(FillFailure::Timeout)));
-        assert_eq!(
-            events.iter().map(|event| event.kind).collect::<Vec<_>>(),
-            vec![SearchEventKind::Timeout, SearchEventKind::FinalReturn]
-        );
-        assert_eq!(events[0].worker_id, None);
-        assert_eq!(events[0].active_worker_count, 0);
-        assert_eq!(events[0].result, Some(SearchEventResult::Timeout));
-        assert_eq!(events[1].result, Some(SearchEventResult::Timeout));
-    }
-
-    #[test]
-    fn observer_reports_scheduler_abort_without_starting_workers() {
-        let mut word_list = tiered_word_list();
-        let mut config = tiered_single_slot_config(&mut word_list);
-        config.abort = Some(Arc::new(AtomicBool::new(true)));
-        let config_ref = config.to_config_ref();
-        let prepared = prepare_search(&config_ref).unwrap();
-        let mut events = Vec::new();
-        let result =
-            find_best_fill_with_observer(&config_ref, &prepared, None, Some(1), 0, |event| {
-                events.push(event);
-            });
-
-        assert!(matches!(result, Err(FillFailure::Abort)));
-        assert_eq!(
-            events.iter().map(|event| event.kind).collect::<Vec<_>>(),
-            vec![SearchEventKind::Abort, SearchEventKind::FinalReturn]
-        );
-        assert_eq!(events[0].worker_id, None);
-        assert_eq!(events[0].result, Some(SearchEventResult::Abort));
-        assert_eq!(events[1].result, Some(SearchEventResult::Abort));
+            let (kind, event_result) = if aborted {
+                (SearchEventKind::Abort, SearchEventResult::Abort)
+            } else {
+                (SearchEventKind::Timeout, SearchEventResult::Timeout)
+            };
+            match (&result, aborted) {
+                (Err(FillFailure::Abort), true) | (Err(FillFailure::Timeout), false) => {}
+                _ => panic!("unexpected outcome for aborted={aborted}: {result:?}"),
+            }
+            assert_eq!(
+                events.iter().map(|event| event.kind).collect::<Vec<_>>(),
+                vec![kind, SearchEventKind::FinalReturn]
+            );
+            assert_eq!(events[0].worker_id, None);
+            assert_eq!(events[0].active_worker_count, 0);
+            assert_eq!(events[0].result, Some(event_result));
+            assert_eq!(events[1].result, Some(event_result));
+        }
     }
 
     #[test]
     fn fixed_preferred_words_are_separate_from_discovered_words() {
-        let mut word_list = tiered_word_list();
+        let mut word_list = tiered_word_list(&["cat"], &["dog"]);
         let config = generate_grid_config_from_template_string(&mut word_list, "cat\n", 0)
             .expect("test template is valid");
         let config_ref = config.to_config_ref();

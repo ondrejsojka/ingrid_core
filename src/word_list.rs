@@ -1576,8 +1576,11 @@ impl Debug for WordList {
 #[allow(clippy::float_cmp)]
 #[allow(clippy::too_many_lines)]
 #[allow(clippy::similar_names)]
-pub mod tests {
+mod tests {
     use crate::dupe_index::{AnyDupeIndex, DupeIndex};
+    use crate::test_support::{
+        dictionary_path, fingerprint, memory_word_list, uniform_source, word_list_source_config,
+    };
     use crate::types::GlobalWordId;
     use crate::word_list::{
         NormalizationSettings, WordList, WordListSourceConfig, WordListSourceConfigProvider,
@@ -1585,45 +1588,13 @@ pub mod tests {
     };
     use std::collections::HashSet;
     use std::fs;
-    use std::path;
-    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
-
-    #[must_use]
-    pub fn dictionary_path() -> PathBuf {
-        let mut path = path::PathBuf::from(file!());
-        path.pop();
-        path.pop();
-        path.push("resources");
-        path.push("spreadthewordlist.dict");
-        path
-    }
-
-    #[must_use]
-    pub fn word_list_source_config() -> Vec<WordListSourceConfig> {
-        vec![WordListSourceConfig {
-            id: "0".into(),
-            enabled: true,
-            provider: WordListSourceConfigProvider::File {
-                path: dictionary_path().into(),
-            },
-            normalization: None,
-        }]
-    }
 
     #[test]
     fn test_word_tiers_follow_effective_source() {
-        let source = |id: &str, words: &[&str]| WordListSourceConfig {
-            id: id.into(),
-            enabled: true,
-            provider: WordListSourceConfigProvider::Memory {
-                words: words.iter().map(|word| ((*word).to_string(), 50)).collect(),
-            },
-            normalization: None,
-        };
         let sources = vec![
-            source("preferred", &["alpha", "shared"]),
-            source("standard", &["bravo", "shared"]),
+            uniform_source("preferred", &["alpha", "shared"]),
+            uniform_source("standard", &["bravo", "shared"]),
         ];
         let mut word_list = WordList::new(sources.clone(), None, None, None);
         word_list.set_preferred_source_ids(HashSet::from(["preferred".into()]));
@@ -1915,19 +1886,10 @@ pub mod tests {
 
     #[test]
     fn test_dupe_exempt_preferred() {
-        let source = |id: &str, words: &[&str]| WordListSourceConfig {
-            id: id.into(),
-            enabled: true,
-            provider: WordListSourceConfigProvider::Memory {
-                words: words.iter().map(|word| (word.to_string(), 50)).collect(),
-            },
-            normalization: None,
-        };
-
         let mut word_list = WordList::new(
             vec![
-                source("preferred", &["golf", "golfy"]),
-                source("standard", &["golfer"]),
+                uniform_source("preferred", &["golf", "golfy"]),
+                uniform_source("standard", &["golfer"]),
             ],
             None,
             Some(6),
@@ -2727,31 +2689,9 @@ pub mod tests {
         assert_eq!(fs::read_to_string(tmpfile.path()).unwrap(), "sT eev;51\n");
     }
 
-    fn fingerprint(word_list: &WordList) -> (Vec<usize>, usize, usize, usize, usize) {
-        (
-            word_list.words.iter().map(Vec::len).collect(),
-            word_list.word_id_by_string.len(),
-            word_list.glyphs.len(),
-            word_list.dupe_index.group_count(),
-            word_list.dupe_index.indexed_word_count(),
-        )
-    }
-
     #[test]
     fn test_rewind_undoes_hidden_words_glyphs_and_dupe_groups() {
-        let mut word_list = WordList::new(
-            vec![WordListSourceConfig {
-                id: "0".into(),
-                enabled: true,
-                provider: WordListSourceConfigProvider::Memory {
-                    words: vec![("abcde".into(), 50), ("fghij".into(), 50)],
-                },
-                normalization: None,
-            }],
-            None,
-            Some(5),
-            Some(3),
-        );
+        let mut word_list = memory_word_list(&[("abcde", 50), ("fghij", 50)], Some(3));
         let before = fingerprint(&word_list);
         let snapshot = word_list.snapshot();
 
@@ -2783,121 +2723,47 @@ pub mod tests {
             .is_some_and(|ids| ids.contains(&0)));
     }
 
+    /// Rewind must reclaim dupe-index state for any shape of probe stream, because the index
+    /// can only reclaim a substring group while that group is the most recent one, and
+    /// insertion order is slot order, not length order. Walking the length buckets ascending
+    /// removes a shorter word before a longer one added earlier, at which point the shorter
+    /// word's group is buried and stranded forever — one leaked group and substring key per
+    /// probe, which for a service answering millions of questions is exactly the growth
+    /// `rewind` exists to prevent.
     #[test]
-    fn test_rewind_is_stable_across_repeated_cycles() {
-        let mut word_list = WordList::new(
-            vec![WordListSourceConfig {
-                id: "0".into(),
-                enabled: true,
-                provider: WordListSourceConfigProvider::Memory {
-                    words: vec![("abcde".into(), 50)],
-                },
-                normalization: None,
-            }],
-            None,
-            Some(5),
-            Some(3),
-        );
-        let before = fingerprint(&word_list);
-        for _ in 0..5 {
-            let snapshot = word_list.snapshot();
-            for word in ["abcdz", "zyxwv", "abcdz"] {
-                word_list.get_word_id_or_add_hidden(word);
-            }
-            word_list.rewind(&snapshot);
-            assert_eq!(
-                fingerprint(&word_list),
-                before,
-                "an add/rewind cycle left residue behind"
-            );
-        }
-    }
-
-    /// Regression: rewind must replay appends in exact reverse insertion order, not bucket order.
-    ///
-    /// The dupe index can only reclaim a substring group while that group is the most recent one,
-    /// and insertion order is slot order, not length order. Walking the length buckets ascending
-    /// removes `wxyz` before `klmno`, at which point `wxyz`'s group is buried under `klmno`'s and
-    /// is stranded forever — one leaked group and substring key per probe, which for a service
-    /// answering millions of questions is exactly the growth `rewind` exists to prevent.
-    #[test]
-    fn test_rewind_reclaims_groups_when_lengths_are_appended_out_of_order() {
-        for order in [["wxyz", "klmno"], ["klmno", "wxyz"]] {
-            let mut word_list = WordList::new(
-                vec![WordListSourceConfig {
-                    id: "0".into(),
-                    enabled: true,
-                    provider: WordListSourceConfigProvider::Memory {
-                        words: vec![("abcde".into(), 50), ("abcd".into(), 50)],
-                    },
-                    normalization: None,
-                }],
-                None,
-                Some(5),
-                Some(3),
-            );
+    fn test_rewind_reclaims_index_state_across_probe_stream_shapes() {
+        let repeated_cycle = vec![vec!["abcdz", "zyxwv", "abcdz"]; 5];
+        let appended_out_of_order = vec![vec!["wxyz", "klmno"], vec!["klmno", "wxyz"]];
+        // A real probe stream: a grid's fully specified slots are visited in slot order,
+        // with interleaved lengths and repeats.
+        let interleaved = vec![vec!["wxyz", "klmno", "abcz", "vwxyz", "wxyz", "qrst"]; 4];
+        for (seed_words, rounds) in [
+            (vec!["abcde"], repeated_cycle),
+            (vec!["abcde", "abcd"], appended_out_of_order),
+            (vec!["abcde", "abcd", "abc"], interleaved),
+        ] {
+            let scored: Vec<(&str, u16)> = seed_words.iter().map(|&word| (word, 50)).collect();
+            let mut word_list = memory_word_list(&scored, Some(3));
             let before = fingerprint(&word_list);
-            let snapshot = word_list.snapshot();
-            for word in order {
-                word_list.get_word_id_or_add_hidden(word);
+            for round in &rounds {
+                let snapshot = word_list.snapshot();
+                for word in round {
+                    word_list.get_word_id_or_add_hidden(word);
+                }
+                assert_ne!(fingerprint(&word_list), before, "{round:?} added nothing");
+                word_list.rewind(&snapshot);
+                assert_eq!(
+                    fingerprint(&word_list),
+                    before,
+                    "rewinding {round:?} stranded index state"
+                );
             }
-            assert_ne!(fingerprint(&word_list), before, "{order:?} added nothing");
-            word_list.rewind(&snapshot);
-            assert_eq!(
-                fingerprint(&word_list),
-                before,
-                "appending {order:?} and rewinding stranded index state"
-            );
-        }
-    }
-
-    /// The same property with many interleaved lengths and repeats, which is what a real probe
-    /// stream looks like: a grid's fully specified slots are visited in slot order.
-    #[test]
-    fn test_rewind_reclaims_groups_across_interleaved_lengths() {
-        let mut word_list = WordList::new(
-            vec![WordListSourceConfig {
-                id: "0".into(),
-                enabled: true,
-                provider: WordListSourceConfigProvider::Memory {
-                    words: vec![
-                        ("abcde".into(), 50),
-                        ("abcd".into(), 50),
-                        ("abc".into(), 50),
-                    ],
-                },
-                normalization: None,
-            }],
-            None,
-            Some(5),
-            Some(3),
-        );
-        let before = fingerprint(&word_list);
-        for round in 0..4 {
-            let snapshot = word_list.snapshot();
-            for word in ["wxyz", "klmno", "abcz", "vwxyz", "wxyz", "qrst"] {
-                word_list.get_word_id_or_add_hidden(word);
-            }
-            word_list.rewind(&snapshot);
-            assert_eq!(fingerprint(&word_list), before, "round {round}");
         }
     }
 
     #[test]
     fn test_rewind_leaves_blocklist_edits_alone() {
-        let mut word_list = WordList::new(
-            vec![WordListSourceConfig {
-                id: "0".into(),
-                enabled: true,
-                provider: WordListSourceConfigProvider::Memory {
-                    words: vec![("abcde".into(), 50)],
-                },
-                normalization: None,
-            }],
-            None,
-            Some(5),
-            None,
-        );
+        let mut word_list = memory_word_list(&[("abcde", 50)], None);
         assert_eq!(
             word_list.hide_words(&HashSet::from(["abcde".to_string()])),
             1

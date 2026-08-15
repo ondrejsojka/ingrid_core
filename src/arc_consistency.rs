@@ -665,7 +665,7 @@ pub fn establish_arc_consistency_for_static_grid(
 mod tests {
     use crate::arc_consistency::{establish_arc_consistency_for_static_grid, EliminationSet};
     use crate::grid_config::{generate_grid_config_from_template_string, OwnedGridConfig};
-    use crate::word_list::tests::word_list_source_config;
+    use crate::test_support::word_list_source_config;
     use crate::word_list::WordList;
     use std::time::Instant;
 

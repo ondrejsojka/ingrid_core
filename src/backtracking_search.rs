@@ -1004,8 +1004,8 @@ mod tests {
     use crate::grid_config::{
         generate_grid_config_from_template_string, render_grid, OwnedGridConfig,
     };
+    use crate::test_support::{dictionary_path, word_list_source_config};
     use crate::types::GlobalWordId;
-    use crate::word_list::tests::{dictionary_path, word_list_source_config};
     use crate::word_list::{WordList, WordListSourceConfig, WordListSourceConfigProvider};
     use indoc::indoc;
     use std::sync::atomic::{AtomicBool, Ordering};

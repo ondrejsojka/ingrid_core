@@ -17,6 +17,8 @@ pub mod grid_config;
 mod live_state;
 pub mod oracle;
 pub mod parallel_search;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod types;
 pub mod util;
 pub mod variant_estimate;

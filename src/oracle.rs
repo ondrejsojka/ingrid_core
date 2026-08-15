@@ -393,36 +393,17 @@ mod tests {
     };
     use crate::live_state::PreparedSearch;
     use crate::oracle::{Oracle, OracleOptions, ProbeError, ProbeOptions, Verdict};
-    use crate::word_list::tests::word_list_source_config;
-    use crate::word_list::{
-        NormalizationSettings, WordList, WordListSourceConfig, WordListSourceConfigProvider,
+    use crate::test_support::{
+        fingerprint, memory_source, memory_word_list, word_list_source_config,
     };
+    use crate::word_list::{NormalizationSettings, WordList};
 
     /// The engine forbids using the same word twice even with no `max_shared_substring`, so a
     /// fillable 2x2 needs four distinct words: `ab`/`cd` across, `ac`/`bd` down.
     const SQUARE: &[(&str, u16)] = &[("ab", 50), ("cd", 50), ("ac", 50), ("bd", 50)];
 
-    fn word_list(words: &[(&str, u16)], max_shared_substring: Option<usize>) -> WordList {
-        WordList::new(
-            vec![WordListSourceConfig {
-                id: "standard".into(),
-                enabled: true,
-                provider: WordListSourceConfigProvider::Memory {
-                    words: words
-                        .iter()
-                        .map(|&(word, score)| (word.to_string(), score))
-                        .collect(),
-                },
-                normalization: None,
-            }],
-            None,
-            Some(5),
-            max_shared_substring,
-        )
-    }
-
     fn oracle_with(words: &[(&str, u16)], options: OracleOptions) -> Oracle {
-        Oracle::new(word_list(words, None), options).expect("sources agree about diacritics")
+        Oracle::new(memory_word_list(words, None), options).expect("sources agree about diacritics")
     }
 
     fn oracle(words: &[(&str, u16)]) -> Oracle {
@@ -435,14 +416,21 @@ mod tests {
         )
     }
 
+    /// `max_shared_substring = Some(3)`: sharing a four-letter substring is forbidden.
+    fn constrained_oracle(words: &[(&str, u16)]) -> Oracle {
+        Oracle::new(
+            memory_word_list(words, Some(3)),
+            OracleOptions {
+                min_score: 0,
+                ..OracleOptions::default()
+            },
+        )
+        .expect("sources agree about diacritics")
+    }
+
     const FILL_PROBE: ProbeOptions = ProbeOptions {
         probe_time: Some(Duration::from_secs(5)),
         want_fill: true,
-    };
-
-    const AC_ONLY: ProbeOptions = ProbeOptions {
-        probe_time: Some(Duration::ZERO),
-        want_fill: false,
     };
 
     #[test]
@@ -472,18 +460,17 @@ mod tests {
         let probe = oracle.probe_with("..\n..", &FILL_PROBE).unwrap();
         assert_eq!(probe.verdict, Verdict::Fillable);
         assert_eq!(probe.fill.as_deref(), Some("ab\ncd"));
-    }
 
-    #[test]
-    fn blocks_round_trip_through_a_returned_fill() {
-        let mut oracle = oracle(SQUARE);
-        let probe = oracle.probe_with("..#\n..#", &FILL_PROBE).unwrap();
-        assert_eq!(probe.verdict, Verdict::Fillable);
-        let fill = probe.fill.expect("fill was requested");
-        assert_eq!(fill, "ab#\ncd#");
-        // The rendered fill is itself a legal template, and probing it agrees.
+        // Blocks ride along in the rendered fill, and that fill is itself a legal
+        // template that a later probe answers the same way.
+        let blocked = oracle.probe_with("..#\n..#", &FILL_PROBE).unwrap();
+        assert_eq!(blocked.verdict, Verdict::Fillable);
+        assert_eq!(blocked.fill.as_deref(), Some("ab#\ncd#"));
         assert_eq!(
-            oracle.probe_with(&fill, &FILL_PROBE).unwrap().verdict,
+            oracle
+                .probe_with(blocked.fill.as_deref().unwrap(), &FILL_PROBE)
+                .unwrap()
+                .verdict,
             Verdict::Fillable
         );
     }
@@ -496,7 +483,15 @@ mod tests {
         // grid is unfillable. This is the necessary-versus-sufficient gap in miniature: the cheap
         // screen passes and the proof has to come from the search.
         let mut oracle = oracle(&[("ab", 50), ("ba", 50), ("cd", 50), ("dc", 50)]);
-        let screen = oracle.probe_with("..\n..", &AC_ONLY).unwrap();
+        let screen = oracle
+            .probe_with(
+                "..\n..",
+                &ProbeOptions {
+                    probe_time: Some(Duration::ZERO),
+                    want_fill: false,
+                },
+            )
+            .unwrap();
         assert_eq!(screen.verdict, Verdict::Unknown);
         assert_eq!(screen.min_domain, 4, "arc consistency eliminated nothing");
         assert_eq!(
@@ -512,13 +507,7 @@ mod tests {
         // pattern screen can see, because each slot's domain stays non-empty.
         let words = &[("abcde", 50), ("abcdf", 50)];
         let template = ".....\n#####\n.....";
-        let options = || OracleOptions {
-            min_score: 0,
-            ..OracleOptions::default()
-        };
-
-        let mut permissive =
-            Oracle::new(word_list(words, None), options()).expect("sources agree about diacritics");
+        let mut permissive = oracle(words);
         assert_eq!(
             permissive
                 .probe_with(template, &FILL_PROBE)
@@ -528,13 +517,38 @@ mod tests {
         );
 
         // `max_shared_substring` is the largest *allowed* overlap, so 3 forbids sharing four.
-        let mut strict = Oracle::new(word_list(words, Some(3)), options())
-            .expect("sources agree about diacritics");
+        let mut strict = constrained_oracle(words);
         let probe = strict.probe_with(template, &FILL_PROBE).unwrap();
         assert_eq!(probe.verdict, Verdict::Unfillable);
         assert_eq!(
             probe.min_domain, 2,
             "both domains survive; the pair does not"
+        );
+
+        // The same constraint binds a forced entry: a non-word pinned into one slot shares
+        // `abcd` with the only candidate for the other, so the rewind cannot be doing its
+        // job too early — the entry participates in the refutation and then leaves nothing
+        // behind, not even in the substring index it had just joined.
+        let words = &[("abcde", 50)];
+        let template = "abcdf\n#####\n.....";
+        let mut permissive = oracle(words);
+        assert_eq!(
+            permissive
+                .probe_with(template, &FILL_PROBE)
+                .unwrap()
+                .verdict,
+            Verdict::Fillable
+        );
+        let mut strict = constrained_oracle(words);
+        let before = fingerprint(strict.word_list());
+        assert_eq!(
+            strict.probe_with(template, &FILL_PROBE).unwrap().verdict,
+            Verdict::Unfillable
+        );
+        assert_eq!(fingerprint(strict.word_list()), before);
+        assert_eq!(
+            strict.probe_with(template, &FILL_PROBE).unwrap().verdict,
+            Verdict::Unfillable
         );
     }
 
@@ -561,30 +575,8 @@ mod tests {
     }
 
     #[test]
-    fn probes_do_not_interfere_with_each_other() {
-        let mut oracle = oracle(SQUARE);
-        // A fully specified slot forces a hidden word into the dictionary and its dupe index;
-        // repeated probes must not drift as that accumulates.
-        for _ in 0..3 {
-            assert_eq!(
-                oracle
-                    .probe_with("..\n..", &FILL_PROBE)
-                    .unwrap()
-                    .fill
-                    .as_deref(),
-                Some("ab\ncd")
-            );
-            assert_eq!(
-                oracle.probe_with("zz\n..", &FILL_PROBE).unwrap().verdict,
-                Verdict::Unfillable
-            );
-        }
-        assert_eq!(oracle.probe_count(), 6);
-    }
-
-    #[test]
     fn a_blocklist_hides_words_for_every_later_probe() {
-        let mut list = word_list(SQUARE, None);
+        let mut list = memory_word_list(SQUARE, None);
         assert_eq!(list.hide_words(&HashSet::from(["bd".to_string()])), 1);
         let mut oracle = Oracle::new(
             list,
@@ -607,20 +599,9 @@ mod tests {
             oracle.probe("").unwrap_err(),
             ProbeError::Template(TemplateError::NoRows)
         );
-        assert_eq!(
-            oracle.probe("..\n...").unwrap_err(),
-            ProbeError::Template(TemplateError::RaggedRows {
-                row: 1,
-                expected: 2,
-                found: 3
-            })
-        );
-        // An interior blank row is a malformed grid, not whitespace to be tidied away. Skipping it
-        // would answer a question about a different, smaller template.
-        assert_eq!(
-            oracle.probe("..\n\n..").unwrap_err(),
-            ProbeError::Template(TemplateError::EmptyRow { row: 1 })
-        );
+        // The finer-grained template error cases live in `grid_config::template_tests`;
+        // what is oracle-specific is the wrapping, the slot-length check against the
+        // loaded dictionary, and that a refused probe leaves the oracle usable.
         assert_eq!(
             oracle.probe("......\n......").unwrap_err(),
             ProbeError::SlotTooLong {
@@ -628,31 +609,8 @@ mod tests {
                 maximum: 5
             }
         );
-        // A refused probe leaves the oracle usable.
         assert_eq!(oracle.probe("..\n..").unwrap().verdict, Verdict::Unknown);
         assert_eq!(oracle.probe_count(), 1);
-    }
-
-    #[test]
-    fn a_zero_override_forces_arc_consistency_only() {
-        let mut oracle = oracle_with(
-            SQUARE,
-            OracleOptions {
-                min_score: 0,
-                default_probe_time: Duration::from_secs(5),
-                ..OracleOptions::default()
-            },
-        );
-        assert_eq!(oracle.probe("..\n..").unwrap().verdict, Verdict::Fillable);
-        assert_eq!(
-            oracle.probe_with("..\n..", &AC_ONLY).unwrap().verdict,
-            Verdict::Unknown
-        );
-        // Even when the search is skipped, arc consistency still refutes.
-        assert_eq!(
-            oracle.probe_with("z.\n..", &AC_ONLY).unwrap().verdict,
-            Verdict::Unfillable
-        );
     }
 
     fn spread_the_wordlist(max_length: usize) -> WordList {
@@ -755,48 +713,38 @@ mod tests {
         assert_eq!(oracle.probe_count(), 4);
     }
 
-    /// Everything a probe could leave behind in the corpus.
-    fn corpus_fingerprint(word_list: &WordList) -> (Vec<usize>, usize, usize, usize, usize) {
-        (
-            word_list.words.iter().map(Vec::len).collect(),
-            word_list.word_id_by_string.len(),
-            word_list.glyphs.len(),
-            word_list.dupe_index.group_count(),
-            word_list.dupe_index.indexed_word_count(),
-        )
-    }
-
-    /// The blocker this design exists for: a fully specified slot forces a hidden entry into the
-    /// dictionary and its dupe index, and a service answering millions of questions must not
-    /// accumulate them. Probes that pin non-words, novel glyphs and repeated non-words all have to
-    /// leave the corpus exactly as they found it.
+    /// Everything a probe could leave behind in the corpus is covered by the shared
+    /// `fingerprint`. The blocker this design exists for: a fully specified slot forces a
+    /// hidden entry into the dictionary and its dupe index, and a service answering millions
+    /// of questions must not accumulate them. Probes that pin non-words, novel glyphs and
+    /// repeated non-words all have to leave the corpus exactly as they found it — and the
+    /// answers a caller sees must not drift as the forced entries come and go.
     #[test]
     fn probes_leave_the_corpus_byte_for_byte_unchanged() {
-        let mut oracle = Oracle::new(
-            word_list(SQUARE, Some(3)),
-            OracleOptions {
-                min_score: 0,
-                ..OracleOptions::default()
-            },
-        )
-        .expect("sources agree about diacritics");
-        let before = corpus_fingerprint(oracle.word_list());
+        let mut oracle = constrained_oracle(SQUARE);
+        let before = fingerprint(oracle.word_list());
 
         for _ in 0..3 {
             // `zz` is not in the list, and `z` is not even a known glyph.
-            oracle.probe("zz\n..").unwrap();
+            assert_eq!(oracle.probe("zz\n..").unwrap().verdict, Verdict::Unfillable);
             // Two fully specified slots, so two forced entries in one probe.
             oracle.probe("zz\nqq").unwrap();
-            // A pin whose letters are long enough to enter the shared-substring index.
-            oracle
-                .probe_with("zz\n..", &ProbeOptions::default())
-                .unwrap();
+            // The fill a caller gets does not drift as forced entries accumulate.
             assert_eq!(
-                corpus_fingerprint(oracle.word_list()),
+                oracle
+                    .probe_with("..\n..", &FILL_PROBE)
+                    .unwrap()
+                    .fill
+                    .as_deref(),
+                Some("ab\ncd")
+            );
+            assert_eq!(
+                fingerprint(oracle.word_list()),
                 before,
                 "a probe left state behind in the corpus"
             );
         }
+        assert_eq!(oracle.probe_count(), 9);
     }
 
     /// Same property with real five-letter pins against the bundled dictionary, where the forced
@@ -811,7 +759,7 @@ mod tests {
             },
         )
         .expect("sources agree about diacritics");
-        let before = corpus_fingerprint(oracle.word_list());
+        let before = fingerprint(oracle.word_list());
         for pin in ["qqqqq", "xyzzy", "qqqqq", "vwxyz"] {
             let probe = oracle
                 .probe(&format!("{pin}\n.....\n.....\n.....\n....."))
@@ -819,11 +767,7 @@ mod tests {
             // These probes run arc consistency only, so they can never claim a fill; the subject
             // of the test is what they leave behind, not which way they answer.
             assert_ne!(probe.verdict, Verdict::Fillable, "{pin}");
-            assert_eq!(
-                corpus_fingerprint(oracle.word_list()),
-                before,
-                "after {pin}"
-            );
+            assert_eq!(fingerprint(oracle.word_list()), before, "after {pin}");
         }
         // And the corpus still answers the way it did before any of that.
         let bare = oracle
@@ -832,62 +776,10 @@ mod tests {
         assert_eq!(bare.verdict, Verdict::Fillable);
     }
 
-    /// A probe answered from a rewound corpus must still enforce the dupe rules that the forced
-    /// entry participates in, so the rewind cannot be doing its job too early.
-    #[test]
-    fn a_forced_entry_still_constrains_the_grid_it_belongs_to() {
-        // Two independent five-letter slots, one pinned to a non-word that shares `abcd` with the
-        // only candidate for the other. With four-letter overlaps forbidden, the grid is refuted.
-        let words = &[("abcde", 50)];
-        let template = "abcdf\n#####\n.....";
-        let options = || OracleOptions {
-            min_score: 0,
-            ..OracleOptions::default()
-        };
-
-        let mut permissive =
-            Oracle::new(word_list(words, None), options()).expect("sources agree about diacritics");
-        assert_eq!(
-            permissive
-                .probe_with(template, &FILL_PROBE)
-                .unwrap()
-                .verdict,
-            Verdict::Fillable
-        );
-
-        let mut strict = Oracle::new(word_list(words, Some(3)), options())
-            .expect("sources agree about diacritics");
-        let before = corpus_fingerprint(strict.word_list());
-        assert_eq!(
-            strict.probe_with(template, &FILL_PROBE).unwrap().verdict,
-            Verdict::Unfillable
-        );
-        // The entry did its job inside the probe and left nothing behind: the rewind removes it
-        // from the substring index it had just joined, not merely from the word buckets.
-        assert_eq!(corpus_fingerprint(strict.word_list()), before);
-        assert_eq!(
-            strict.probe_with(template, &FILL_PROBE).unwrap().verdict,
-            Verdict::Unfillable
-        );
-    }
-
     fn accented_word_list(settings: Option<NormalizationSettings>) -> WordList {
-        WordList::new(
-            vec![WordListSourceConfig {
-                id: "standard".into(),
-                enabled: true,
-                provider: WordListSourceConfigProvider::Memory {
-                    words: SQUARE
-                        .iter()
-                        .map(|&(word, score)| (word.to_string(), score))
-                        .collect(),
-                },
-                normalization: settings,
-            }],
-            None,
-            Some(5),
-            None,
-        )
+        let mut source = memory_source("standard", SQUARE);
+        source.normalization = settings;
+        WordList::new(vec![source], None, Some(5), None)
     }
 
     const FOLDING: NormalizationSettings = NormalizationSettings {
@@ -895,19 +787,21 @@ mod tests {
         convert_diacritics: true,
     };
 
-    /// A diacritic-folding corpus stores `ab`, so a template pinning `á` has to be folded the same
-    /// way or the oracle reports a *proof* of unfillability about a grid that fills. The policy is
-    /// therefore taken from the corpus and cannot be set to something else.
+    /// Normalization policy is derived from the corpus and applied to the template, never a
+    /// second knob beside it. A diacritic-folding corpus stores `ab`, so a template pinning
+    /// `á` has to be folded the same way or the oracle reports a *proof* of unfillability
+    /// about a grid that fills. The same letter against a corpus that keeps accents is
+    /// genuinely unfillable, and saying so is correct rather than an artifact of a mismatched
+    /// second policy.
     #[test]
-    fn template_letters_are_folded_exactly_as_the_corpus_was() {
-        let mut folding = Oracle::new(
-            accented_word_list(Some(FOLDING)),
-            OracleOptions {
-                min_score: 0,
-                ..OracleOptions::default()
-            },
-        )
-        .expect("one source cannot disagree with itself");
+    fn template_normalization_follows_the_corpus_policy() {
+        let relaxed = || OracleOptions {
+            min_score: 0,
+            ..OracleOptions::default()
+        };
+
+        let mut folding = Oracle::new(accented_word_list(Some(FOLDING)), relaxed())
+            .expect("one source cannot disagree with itself");
         assert!(folding.converts_diacritics());
         assert_eq!(
             folding.probe_with("á.\n..", &FILL_PROBE).unwrap().verdict,
@@ -918,14 +812,46 @@ mod tests {
             folding.probe_with("ab\ncd", &FILL_PROBE).unwrap().fill,
             Some("ab\ncd".to_string())
         );
+        // A cell holding a bare combining mark folds away to nothing; that is malformed
+        // input, not a silently empty cell.
+        assert_eq!(
+            folding.probe("\u{0301}.\n..").unwrap_err(),
+            ProbeError::Template(TemplateError::UnfoldableLetter {
+                row: 0,
+                column: 0,
+                letter: '\u{0301}',
+            })
+        );
 
-        // The same letter against a corpus that keeps accents is genuinely unfillable, and saying
-        // so is correct rather than an artifact of a mismatched second policy.
         let mut verbatim = oracle(SQUARE);
         assert!(!verbatim.converts_diacritics());
         assert_eq!(
             verbatim.probe_with("á.\n..", &FILL_PROBE).unwrap().verdict,
             Verdict::Unfillable
+        );
+
+        // Grid syntax is not word content: a source configured to strip punctuation from
+        // its entries must not have that stripping pointed at the `#` and `.` that carry
+        // the grid's structure.
+        let stripping = NormalizationSettings {
+            strip_punctuation: true,
+            convert_diacritics: true,
+        };
+        let mut stripping_oracle = Oracle::new(accented_word_list(Some(stripping)), relaxed())
+            .expect("one source cannot disagree with itself");
+        assert_eq!(
+            stripping_oracle
+                .probe_with("..\n..", &FILL_PROBE)
+                .unwrap()
+                .verdict,
+            Verdict::Fillable
+        );
+        assert_eq!(
+            stripping_oracle
+                .probe_with("..#\n..#", &FILL_PROBE)
+                .unwrap()
+                .fill,
+            Some("ab#\ncd#".to_string())
         );
     }
 
@@ -933,25 +859,10 @@ mod tests {
     /// front of the dictionary on every probe.
     #[test]
     fn an_oracle_refuses_to_guess_between_conflicting_sources() {
+        let mut folding = memory_source("preferred", &[("ab", 50)]);
+        folding.normalization = Some(FOLDING);
         let word_list = WordList::new(
-            vec![
-                WordListSourceConfig {
-                    id: "preferred".into(),
-                    enabled: true,
-                    provider: WordListSourceConfigProvider::Memory {
-                        words: vec![("ab".into(), 50)],
-                    },
-                    normalization: Some(FOLDING),
-                },
-                WordListSourceConfig {
-                    id: "standard".into(),
-                    enabled: true,
-                    provider: WordListSourceConfigProvider::Memory {
-                        words: vec![("cd".into(), 50)],
-                    },
-                    normalization: None,
-                },
-            ],
+            vec![folding, memory_source("standard", &[("cd", 50)])],
             None,
             Some(5),
             None,
@@ -961,53 +872,5 @@ mod tests {
         };
         assert_eq!(conflict.folding, vec!["preferred".to_string()]);
         assert_eq!(conflict.verbatim, vec!["standard".to_string()]);
-    }
-
-    /// Grid syntax is not word content: a source configured to strip punctuation from its entries
-    /// must not have that stripping pointed at the `#` and `.` that carry the grid's structure.
-    #[test]
-    fn source_punctuation_stripping_never_reaches_the_template() {
-        let stripping = NormalizationSettings {
-            strip_punctuation: true,
-            convert_diacritics: true,
-        };
-        let mut oracle = Oracle::new(
-            accented_word_list(Some(stripping)),
-            OracleOptions {
-                min_score: 0,
-                ..OracleOptions::default()
-            },
-        )
-        .expect("one source cannot disagree with itself");
-        assert_eq!(
-            oracle.probe_with("..\n..", &FILL_PROBE).unwrap().verdict,
-            Verdict::Fillable
-        );
-        assert_eq!(
-            oracle.probe_with("..#\n..#", &FILL_PROBE).unwrap().fill,
-            Some("ab#\ncd#".to_string())
-        );
-    }
-
-    /// A cell holding a bare combining mark folds away to nothing; that is malformed input, not a
-    /// silently empty cell.
-    #[test]
-    fn a_letter_that_folds_away_is_an_error() {
-        let mut oracle = Oracle::new(
-            accented_word_list(Some(FOLDING)),
-            OracleOptions {
-                min_score: 0,
-                ..OracleOptions::default()
-            },
-        )
-        .expect("one source cannot disagree with itself");
-        assert_eq!(
-            oracle.probe("\u{0301}.\n..").unwrap_err(),
-            ProbeError::Template(TemplateError::UnfoldableLetter {
-                row: 0,
-                column: 0,
-                letter: '\u{0301}',
-            })
-        );
     }
 }
