@@ -891,6 +891,9 @@ fn find_best_fill_internal(
 }
 
 #[cfg(test)]
+// Exact float equality is the property under test: the threshold spread lands on
+// exact multiples of the base threshold.
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::{
         adaptive_branching_threshold_for_worker, canonical_fill_key, choices_from_fill_key,

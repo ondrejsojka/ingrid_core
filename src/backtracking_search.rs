@@ -299,14 +299,10 @@ pub(crate) fn calculate_slot_weight(
                 other_slot_id,
                 crossing_id,
                 ..
-            }) => {
-                if slots[*other_slot_id].remaining_option_count > 1 {
-                    crossing_weights[*crossing_id]
-                } else {
-                    0.0
-                }
+            }) if slots[*other_slot_id].remaining_option_count > 1 => {
+                crossing_weights[*crossing_id]
             }
-            None => 0.0,
+            _ => 0.0,
         })
         .sum()
 }
@@ -484,7 +480,7 @@ pub(crate) fn maintain_arc_consistency(
         }
 
         ArcConsistencyMode::Initial => {}
-    };
+    }
 
     let remaining_option_counts = slots
         .iter()
@@ -611,11 +607,11 @@ fn choose_next_slot(
     sorted_slot_ids.sort_by_cached_key(|&slot_id| {
         let priority = preferred_steered_slot_priority(slots, slot_weights, slot_id);
 
-        if best_slot_priority.map_or(true, |best_priority| best_priority > priority) {
+        if best_slot_priority.is_none_or(|best_priority| best_priority > priority) {
             best_slot_priority = Some(priority);
         }
 
-        if last_slot_id.map_or(false, |last_id| last_id == slot_id) {
+        if last_slot_id.is_some_and(|last_id| last_id == slot_id) {
             last_slot_priority = Some(priority);
         }
 

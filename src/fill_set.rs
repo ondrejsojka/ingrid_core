@@ -19,10 +19,12 @@ pub struct DistinctFillSet {
 }
 
 impl DistinctFillSet {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn with_fill(fill: Box<[WordId]>) -> Self {
         let mut set = Self::new();
         set.insert(fill);
@@ -41,6 +43,7 @@ impl DistinctFillSet {
         }
     }
 
+    #[must_use]
     pub fn capped(&self) -> bool {
         self.capped
     }
@@ -51,10 +54,12 @@ impl DistinctFillSet {
         self.capped = true;
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.fills.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.fills.is_empty()
     }

@@ -4,7 +4,6 @@
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::comparison_chain)]
 #![allow(clippy::implicit_hasher)]
-#![allow(clippy::match_on_vec_items)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::module_name_repetitions)]

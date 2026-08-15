@@ -641,7 +641,7 @@ pub fn establish_arc_consistency_for_static_grid(
                 .filter(|crossing| {
                     crossing
                         .as_ref()
-                        .map_or(false, |crossing| !fixed_slots[crossing.other_slot_id])
+                        .is_some_and(|crossing| !fixed_slots[crossing.other_slot_id])
                 })
                 .count() as f32
         })
@@ -729,7 +729,10 @@ mod tests {
             slot_options.retain(|word_id| !eliminations_by_slot[slot_id].contains(*word_id));
         }
 
-        println!("Options pruned in {:?}", start.elapsed() - checkpoint);
+        println!(
+            "Options pruned in {:?}",
+            start.elapsed().saturating_sub(checkpoint)
+        );
 
         let opts = &grid_config.slot_options;
         assert_eq!(opts[0].len(), 1, "filled-in entry has one option");

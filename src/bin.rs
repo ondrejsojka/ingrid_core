@@ -390,7 +390,7 @@ fn main() -> Result<(), Error> {
     }
     if !args
         .max_shared_substring
-        .map_or(true, |mss| (3..=10).contains(&mss))
+        .is_none_or(|mss| (3..=10).contains(&mss))
     {
         return Err(Error(
             "If given, max shared substring must be between 3 and 10".into(),
