@@ -496,7 +496,12 @@ applies first, costs milliseconds. Yield went **1/16 → 60/119**.
 Then `scripts/theme_construct.py` places marquee entries greedily **with the real solver
 as the oracle** — which is what `theme_seed.py` structurally could not do. A short run is
 a sufficient oracle because `Unfillable` is decided at initial AC and returns instantly.
-It seated 2-3 entries per template before the grid refused more.
+It seated 2-3 entries per template before the grid refused more. On the Brno-anything
+15×15 (two 9-slots, κ≈0.90, three pins already), a fourth long-marquee pin was
+arc-consistency-**refuted** for every candidate, not budget-timed-out: pin saturation is
+real, and a "0 candidates ran out of budget" stop line is the honest report shape.
+Pin_long.py with `--probe-ms 20000` recovered one refused placement the default 3 s
+budget had misreported as `unknown`.
 
 Two more landmines in the same family:
 
@@ -720,6 +725,30 @@ choice between them is editorial, not technical — which is the healthy state t
   `aren`, `hala`. Each has a real Brno hook *in its clue*. In the grid they read as
   nothing. Test for tier membership: **would a reader recognize this word with the clue
   covered?** `HORA` no. `LUZANEK` yes.
+- **The tier is stuffed with oblique forms that read as nothing, and the optimizer spends
+  credits on them chronically.** Fourth title's second day, full harvest honesty loop:
+  `sonům` (gen.pl. of a club), `smetan`, `bronxem`, `šalin` (gen.pl. of *the* hantec
+  word), `tokiem`, `slatin`, `scalů`, `kolišť`, `lesné`, `tuřan`. Every one is the
+  *covered-clue fails* class, and every one was credited Preferred while occupying a slot
+  a real theme word could have taken. Two cuts, both cheap, applied to the tier *before*
+  harvest:
+  1. **Pure genitive plurals are farm, wholesale.** Entries whose every MorphoDiTa
+     analysis is number-P, case-2 (a 10-line pass over the tier; 31 of ~900 entries on
+     this title, all junk: `kolišť`, `zelňáků`, `vaňkovek`, `šalinkaret`, umprumů).
+     Kill the class, not the instances.
+  2. **Multi-case non-nominatives need the eye test singly** (`tokiem`, `scalů`,
+     `mende`): the rule is nominative-or-house-form plus litotes (initialisms, idiom
+     forms like `čudu`), everything else keeps only if the uncovered word reads as the
+     theme on its own. The nominative-everything reading of this rule is too strong —
+     it murders `bohunicích`, which locals genuinely say.
+  Each purge drops the optimum's preferred count (8 → 6 here); that is the count
+  *returning to honesty*, not quality lost. Judge draws only after the purge, or you
+  ship the farm.
+- **fill_critic over-credited accent-variants for years: its tier join stripped
+  diacritics in `load_dict`.** `mou` (possessive) scored as `moú` (the institution) —
+  critic said 8 preferred where the engine counted 7. Fixed upstream: `--preferred`
+  loads verbatim keys now. If you're comparing against critic reports written before
+  the fix, preferred counts are inflated by up to one per accent-pair.
 - **Trusting arc consistency as a screen for seeded grids.** 25 of 25 three-word seedings
   passed `fill_margin` kappa; the real solver rejected every one. Ingrid's own initial
   consistency also propagates dupe and shared-substring eliminations. If you screen
@@ -1007,7 +1036,7 @@ critic above.
 | `lfs_grid11.py` | plants long runs then anneals around them | trick generalises |
 | `tajenka_place.py` | domain-screened placement of multi-part seeds | yes |
 | `theme_construct.py` | greedy marquee seeding, real solver as oracle | yes |
-| `fill_critic.py` | per-entry verdicts, lemma collisions, spread, multi-term score | yes |
+| `fill_critic.py` | per-entry verdicts, lemma collisions, spread, multi-term score; tier joins are exact (no diacritic fold) | yes |
 | `clue_check.py` | the `CLUES.md` §11 kontrolor, all seven checks | yes |
 | `fill_margin.py` | pre-search κ screen | yes |
 | `build_tier.py` | standard tier by provenance + junk filters + corpus attestation, not by a score bar | yes |
