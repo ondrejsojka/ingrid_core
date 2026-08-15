@@ -1569,10 +1569,8 @@ impl Debug for WordList {
 }
 
 #[cfg(test)]
+// Upstream tests use `assert_eq!(x, true)`; kept intact, so the lint stays local.
 #[allow(clippy::bool_assert_comparison)]
-#[allow(clippy::float_cmp)]
-#[allow(clippy::too_many_lines)]
-#[allow(clippy::similar_names)]
 mod tests {
     use crate::dupe_index::{AnyDupeIndex, DupeIndex};
     use crate::test_support::{

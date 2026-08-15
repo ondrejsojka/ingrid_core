@@ -401,7 +401,4 @@ fn duration_ratio(numerator: Duration, denominator: Duration) -> f32 {
 }
 
 #[cfg(test)]
-// Exact float equality is the property under test: cohorts must reproduce estimates
-// bit for bit.
-#[allow(clippy::float_cmp)]
 mod tests;

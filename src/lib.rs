@@ -7,6 +7,11 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::module_name_repetitions)]
+#![allow(clippy::similar_names)]
+// Test code only: exact float equality is routinely the property under test, and table
+// tests run long.
+#![cfg_attr(test, allow(clippy::float_cmp))]
+#![cfg_attr(test, allow(clippy::too_many_lines))]
 
 pub mod arc_consistency;
 pub mod backtracking_search;
