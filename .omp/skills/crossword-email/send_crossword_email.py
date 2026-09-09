@@ -18,31 +18,114 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 from send_mail import send
 
 
-CSS = """
-body{margin:0;background:#f7f4ee;color:#202020;font:16px/1.55 system-ui,-apple-system,sans-serif}
-main{max-width:860px;margin:auto;padding:32px 22px 56px}
-h1,h2,h3{font-family:Georgia,serif;line-height:1.25;margin:1.6em 0 .5em}
-h1{margin-top:0;font-size:27px}h2{font-size:21px;border-top:1px solid #ddd8cc;padding-top:18px}h3{font-size:17px}
-.muted,.mut{color:#6d675c}.small{font-size:13.5px}
-.pill{display:inline-block;background:#2f5d50;color:#fff;border-radius:11px;padding:2px 10px;font-size:13px}
-.pill code{background:rgba(255,255,255,.18);color:#fff}
-code{background:#efeade;padding:1px 4px;border-radius:3px;font-size:13.5px}
-table.cw{border-collapse:collapse;margin:14px 0}
-table.cw td{width:30px;height:30px;border:1px solid #b9b2a2;text-align:center;vertical-align:middle;
-  font:600 15px/1 Georgia,serif;position:relative;background:#fff}
-table.cw td.b{background:#26231d;border-color:#26231d}
-table.cw td.t{background:#f6e6b4}
-.taj{font:600 19px/1.5 Georgia,serif;letter-spacing:.22em}
-.tajbox{border:1px solid #ddd8cc;background:#fffdf6;padding:12px 14px;border-radius:5px;margin:12px 0}
-table.cw .n{position:absolute;top:1px;left:2px;font:400 8.5px/1 system-ui,sans-serif;color:#6d675c}
-ol.cl{margin:0;padding-left:0;list-style:none}
-ol.cl li{padding:1px 0;font-size:14.5px}
-.ans{color:#9a9284;font-size:12.5px}
-.cols{display:flex;gap:28px;flex-wrap:wrap}.cols>div{flex:1;min-width:250px}
-pre{background:#efeade;padding:12px;border-radius:5px;overflow-x:auto;font-size:13px}
-table.d{border-collapse:collapse;font-size:14px;margin:10px 0}
-table.d th,table.d td{border:1px solid #ddd8cc;padding:5px 9px;text-align:left}
-table.d th{background:#efeade;font-weight:600}
+PALETTES = {
+    "classic": {
+        "import": "",
+        "bg": "#f7f4ee",
+        "ink": "#202020",
+        "block": "#26231d",
+        "shade": "#f6e6b4",
+        "line": "#b9b2a2",
+        "rule": "#ddd8cc",
+        "body_font": "system-ui,-apple-system,sans-serif",
+        "head_font": "Georgia,serif",
+        "cell_font": "Georgia,serif",
+        "number_font": "system-ui,sans-serif",
+        "accent": "#2f5d50",
+        "chip": "#efeade",
+        "cell_bg": "#fff",
+        "tajbox_bg": "#fffdf6",
+        "muted": "#6d675c",
+        "answer": "#9a9284",
+        "leg_ink": "#111",
+        "on_accent": "#fff",
+        "pill_code": "rgba(255,255,255,.18)",
+        "pill_code_text": "#fff",
+    },
+    "blueprint": {
+        "import": "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');",
+        "bg": "#ffffff",
+        "ink": "#101010",
+        "block": "#0000EE",
+        "shade": "#DDDDF5",
+        "line": "#0000EE",
+        "rule": "#0000EE",
+        "body_font": "Inter,system-ui,-apple-system,sans-serif",
+        "head_font": "Inter,system-ui,-apple-system,sans-serif",
+        "cell_font": "Inter,system-ui,-apple-system,sans-serif",
+        "number_font": "Inter,system-ui,-apple-system,sans-serif",
+        "accent": "#0000EE",
+        "chip": "#DDDDF5",
+        "cell_bg": "#ffffff",
+        "tajbox_bg": "#ffffff",
+        "muted": "#101010",
+        "answer": "#101010",
+        "leg_ink": "#101010",
+        "on_accent": "#ffffff",
+        "pill_code": "#DDDDF5",
+        "pill_code_text": "#101010",
+    },
+}
+
+
+def american_css(palette):
+    return f"""{palette["import"]}
+body{{margin:0;background:{palette["bg"]};color:{palette["ink"]};font:16px/1.55 {palette["body_font"]}}}
+main{{max-width:860px;margin:auto;padding:32px 22px 56px}}
+h1,h2,h3{{font-family:{palette["head_font"]};line-height:1.25;margin:1.6em 0 .5em}}
+h1{{margin-top:0;font-size:27px}}h2{{font-size:21px;border-top:1px solid {palette["rule"]};padding-top:18px}}h3{{font-size:17px}}
+.muted,.mut{{color:{palette["muted"]}}}.small{{font-size:13.5px}}
+.pill{{display:inline-block;background:{palette["accent"]};color:{palette["on_accent"]};border-radius:11px;padding:2px 10px;font-size:13px}}
+.pill code{{background:{palette["pill_code"]};color:{palette["pill_code_text"]}}}
+code{{background:{palette["chip"]};padding:1px 4px;border-radius:3px;font-size:13.5px}}
+table.cw{{border-collapse:collapse;margin:14px 0}}
+table.cw td{{width:30px;height:30px;border:1px solid {palette["line"]};text-align:center;vertical-align:middle;
+  font:600 15px/1 {palette["cell_font"]};position:relative;background:{palette["cell_bg"]}}}
+table.cw td.b{{background:{palette["block"]};border-color:{palette["block"]}}}
+table.cw td.t{{background:{palette["shade"]}}}
+.taj{{font:600 19px/1.5 {palette["head_font"]};letter-spacing:.22em}}
+.tajbox{{border:1px solid {palette["rule"]};background:{palette["tajbox_bg"]};padding:12px 14px;border-radius:5px;margin:12px 0}}
+table.cw .n{{position:absolute;top:1px;left:2px;font:400 8.5px/1 {palette["number_font"]};color:{palette["muted"]}}}
+ol.cl{{margin:0;padding-left:0;list-style:none}}
+ol.cl li{{padding:1px 0;font-size:14.5px}}
+.ans{{color:{palette["answer"]};font-size:12.5px}}
+.cols{{display:flex;gap:28px;flex-wrap:wrap}}.cols>div{{flex:1;min-width:250px}}
+pre{{background:{palette["chip"]};padding:12px;border-radius:5px;overflow-x:auto;font-size:13px}}
+table.d{{border-collapse:collapse;font-size:14px;margin:10px 0}}
+table.d th,table.d td{{border:1px solid {palette["rule"]};padding:5px 9px;text-align:left}}
+table.d th{{background:{palette["chip"]};font-weight:600}}
+"""
+
+
+def swedish_css(palette):
+    return f"""{palette["import"]}
+body{{margin:0;background:{palette["bg"]};color:{palette["ink"]};font:16px/1.55 {palette["body_font"]}}}
+main{{max-width:1060px;margin:auto;padding:32px 22px 56px}}
+h1,h2,h3{{font-family:{palette["head_font"]};line-height:1.25;margin:1.6em 0 .5em}}
+h1{{margin-top:0;font-size:27px}}h2{{font-size:21px;border-top:1px solid {palette["rule"]};padding-top:18px}}h3{{font-size:17px}}
+.muted,.mut{{color:{palette["muted"]}}}.small{{font-size:13.5px}}
+.pill{{display:inline-block;background:{palette["accent"]};color:{palette["on_accent"]};border-radius:11px;padding:2px 10px;font-size:13px}}
+.pill code{{background:{palette["pill_code"]};color:{palette["pill_code_text"]}}}
+code{{background:{palette["chip"]};padding:1px 4px;border-radius:3px;font-size:13.5px}}
+table.cw{{border-collapse:collapse;margin:14px auto;table-layout:fixed}}
+table.cw td{{width:68px;height:68px;min-width:68px;max-width:68px;box-sizing:border-box;border:1px solid {palette["line"]};
+  text-align:center;vertical-align:middle;padding:1px 2px;background:{palette["cell_bg"]};overflow:hidden;
+  font:600 8.5px/1.05 {palette["body_font"]};word-break:break-word;overflow-wrap:anywhere;hyphens:auto;position:relative}}
+table.cw td.b{{background:{palette["block"]};border-color:{palette["block"]}}}
+table.cw td.t{{background:{palette["shade"]}}}
+table.cw td.a{{font:600 22px/1 {palette["cell_font"]}}}
+.leg-a,.leg-d{{color:{palette["leg_ink"]}}}
+.leg-hr{{border-top:1px solid {palette["line"]};margin:1px 0;height:0}}
+.taj{{font:600 19px/1.5 {palette["head_font"]};letter-spacing:.22em}}
+.tajbox{{border:1px solid {palette["rule"]};background:{palette["tajbox_bg"]};padding:12px 14px;border-radius:5px;margin:12px 0}}
+ol.cl{{margin:0;padding-left:0;list-style:none}}
+ol.cl li{{padding:1px 0;font-size:14.5px}}
+.ans{{color:{palette["answer"]};font-size:12.5px}}
+.cols{{display:flex;gap:28px;flex-wrap:wrap}}.cols>div{{flex:1;min-width:250px}}
+pre{{background:{palette["chip"]};padding:12px;border-radius:5px;overflow-x:auto;font-size:13px}}
+table.d{{border-collapse:collapse;font-size:14px;margin:10px 0}}
+table.d th,table.d td{{border:1px solid {palette["rule"]};padding:5px 9px;text-align:left}}
+table.d th{{background:{palette["chip"]};font-weight:600}}
 """
 
 BAND_NAMES = {"S": "slovník", "O": "obraz", "H": "hra"}
@@ -152,7 +235,7 @@ def locate(rows, nums, across, down, answers):
     return spans
 
 
-def render(rows, nums, across, down, clues, title, headline, intro, tajenka=(), solution=True):
+def render(rows, nums, across, down, clues, title, headline, intro, tajenka=(), solution=True, *, palette):
     shaded = {cell for _, cells, _ in tajenka for cell in cells}
 
     def cell(r, c, solved):
@@ -216,7 +299,7 @@ def render(rows, nums, across, down, clues, title, headline, intro, tajenka=(), 
         )
         numbers = ", ".join(str(n) for _, _, n in tajenka)
         prompt = (
-            f'<div class="tajbox"><b>Tajenka</b> — žlutá pole, hesla {numbers}. '
+            f'<div class="tajbox"><b>Tajenka</b> — vyznačená pole, hesla {numbers}. '
             f'Vylušti je a pošli znění tajenky.</div>'
         )
         answer = f'<div class="tajbox"><b>Tajenka</b>: {parts}</div>'
@@ -236,7 +319,7 @@ def render(rows, nums, across, down, clues, title, headline, intro, tajenka=(), 
     return f"""<!doctype html>
 <html lang="cs"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title}</title><style>{CSS}</style></head>
+<title>{title}</title><style>{american_css(palette)}</style></head>
 <body><main>
 <h1>{headline}</h1>
 {intro}
@@ -281,7 +364,7 @@ def swedish_slots(rows):
     return across_slots, down_slots
 
 
-def render_swedish(rows, clues, title, headline, intro, tajenka=(), solution=True):
+def render_swedish(rows, clues, title, headline, intro, tajenka=(), solution=True, *, palette):
     h, w = len(rows), len(rows[0])
     across_slots, down_slots = swedish_slots(rows)
 
@@ -394,7 +477,7 @@ def render_swedish(rows, clues, title, headline, intro, tajenka=(), solution=Tru
             + f'<span class="taj">{" ".join(w.upper())}</span>'
             for i, (w, _, _) in enumerate(tajenka, 1)
         )
-        prompt = '<div class="tajbox"><b>Tajenka</b> — žlutá pole. Vylušti je a pošli znění tajenky.</div>'
+        prompt = '<div class="tajbox"><b>Tajenka</b> — vyznačená pole. Vylušti je a pošli znění tajenky.</div>'
         answer = f'<div class="tajbox"><b>Tajenka</b>: {parts}</div>'
     else:
         prompt = answer = ""
@@ -409,40 +492,11 @@ def render_swedish(rows, clues, title, headline, intro, tajenka=(), solution=Tru
 <div><h3>Svisle</h3>{key_list(down_slots)}</div></div>
 """
 
-    css_sw = """
-body{margin:0;background:#f7f4ee;color:#202020;font:16px/1.55 system-ui,-apple-system,sans-serif}
-main{max-width:1060px;margin:auto;padding:32px 22px 56px}
-h1,h2,h3{font-family:Georgia,serif;line-height:1.25;margin:1.6em 0 .5em}
-h1{margin-top:0;font-size:27px}h2{font-size:21px;border-top:1px solid #ddd8cc;padding-top:18px}h3{font-size:17px}
-.muted,.mut{color:#6d675c}.small{font-size:13.5px}
-.pill{display:inline-block;background:#2f5d50;color:#fff;border-radius:11px;padding:2px 10px;font-size:13px}
-.pill code{background:rgba(255,255,255,.18);color:#fff}
-code{background:#efeade;padding:1px 4px;border-radius:3px;font-size:13.5px}
-table.cw{border-collapse:collapse;margin:14px auto;table-layout:fixed}
-table.cw td{width:68px;height:68px;min-width:68px;max-width:68px;box-sizing:border-box;border:1px solid #b9b2a2;
-  text-align:center;vertical-align:middle;padding:1px 2px;background:#fff;overflow:hidden;
-  font:600 8.5px/1.05 system-ui,-apple-system,sans-serif;word-break:break-word;overflow-wrap:anywhere;hyphens:auto;position:relative}
-table.cw td.b{background:#26231d;border-color:#26231d}
-table.cw td.t{background:#f6e6b4}
-table.cw td.a{font:600 22px/1 Georgia,serif}
-.leg-a,.leg-d{color:#111}
-.leg-hr{border-top:1px solid #b9b2a2;margin:1px 0;height:0}
-.taj{font:600 19px/1.5 Georgia,serif;letter-spacing:.22em}
-.tajbox{border:1px solid #ddd8cc;background:#fffdf6;padding:12px 14px;border-radius:5px;margin:12px 0}
-ol.cl{margin:0;padding-left:0;list-style:none}
-ol.cl li{padding:1px 0;font-size:14.5px}
-.ans{color:#9a9284;font-size:12.5px}
-.cols{display:flex;gap:28px;flex-wrap:wrap}.cols>div{flex:1;min-width:250px}
-pre{background:#efeade;padding:12px;border-radius:5px;overflow-x:auto;font-size:13px}
-table.d{border-collapse:collapse;font-size:14px;margin:10px 0}
-table.d th,table.d td{border:1px solid #ddd8cc;padding:5px 9px;text-align:left}
-table.d th{background:#efeade;font-weight:600}
-"""
 
     return f"""<!doctype html>
 <html lang="cs"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title}</title><style>{css_sw}</style></head>
+<title>{title}</title><style>{swedish_css(palette)}</style></head>
 <body><main>
 <h1>{headline}</h1>
 {intro}
@@ -472,6 +526,12 @@ def main():
         help="grid layout: american (default) or swedish",
     )
     ap.add_argument(
+        "--palette",
+        choices=["classic", "blueprint"],
+        default="classic",
+        help="visual palette: classic (default) or blueprint",
+    )
+    ap.add_argument(
         "--no-solution",
         action="store_true",
         help="reader-facing send: omit the Řešení grid, the klíč, and the tajenka answer",
@@ -482,6 +542,7 @@ def main():
         "their cells are shaded and the phrase is printed with the solution",
     )
     args = ap.parse_args()
+    palette = PALETTES[args.palette]
 
     rows = read_grid(args.fill)
     clues = read_clues(args.clues)
@@ -501,7 +562,7 @@ def main():
         intro = open(args.intro, encoding="utf-8").read() if args.intro else ""
         html = render(rows, nums, across, down, clues, args.subject,
                       args.headline or args.subject, intro, tajenka,
-                      solution=not args.no_solution)
+                      solution=not args.no_solution, palette=palette)
     else:
         across_slots, down_slots = swedish_slots(rows)
         _, warnings = check(across_slots + down_slots, clues)
@@ -517,7 +578,7 @@ def main():
         intro = open(args.intro, encoding="utf-8").read() if args.intro else ""
         html = render_swedish(rows, clues, args.subject,
                              args.headline or args.subject, intro, tajenka,
-                             solution=not args.no_solution)
+                             solution=not args.no_solution, palette=palette)
 
     if args.out:
         open(args.out, "w", encoding="utf-8").write(html)

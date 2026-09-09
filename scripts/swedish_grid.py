@@ -129,6 +129,63 @@ def block_components(grid, width, height, skip_frame=False):
     return sizes or [0]
 
 
+def block_shape_defects(grid, width, height):
+    """Cells sitting in a block clump whose *shape* is not one an editor asked for.
+
+    Clumps are 8-connected (a corner touch counts), and exactly three shapes are legal:
+    a lone cell, a 1-wide straight bar (horizontal or vertical), and a monotone diagonal
+    chain. Everything else — 2x2 squares, L-bends, the knight-shaped tromino — is a
+    defect, counted per cell so a bigger blob costs more. Squares are returned separately
+    because they are the shape a reader notices first.
+    """
+    seen, bad, squares = set(), 0, 0
+    for r in range(height):
+        for c in range(width):
+            if grid[r][c] and (r, c) not in seen:
+                stack, cells = [(r, c)], []
+                seen.add((r, c))
+                while stack:
+                    a, b = stack.pop()
+                    cells.append((a, b))
+                    for dr in (-1, 0, 1):
+                        for dc in (-1, 0, 1):
+                            p = (a + dr, b + dc)
+                            if (
+                                (dr or dc)
+                                and 0 <= p[0] < height
+                                and 0 <= p[1] < width
+                                and grid[p[0]][p[1]]
+                                and p not in seen
+                            ):
+                                seen.add(p)
+                                stack.append(p)
+                if len(cells) > 1 and not _linear(cells):
+                    bad += len(cells)
+    for r in range(height - 1):
+        for c in range(width - 1):
+            if grid[r][c] and grid[r][c + 1] and grid[r + 1][c] and grid[r + 1][c + 1]:
+                squares += 1
+    return bad, squares
+
+
+def _linear(cells):
+    """True for a contiguous row, a contiguous column, or a contiguous diagonal."""
+    rows = {r for r, _ in cells}
+    cols = {c for _, c in cells}
+    n = len(cells)
+    if len(rows) == 1:
+        return max(cols) - min(cols) == n - 1
+    if len(cols) == 1:
+        return max(rows) - min(rows) == n - 1
+    if len(rows) != n or len(cols) != n:
+        return False
+    ordered = sorted(cells)
+    step = ordered[1][1] - ordered[0][1]
+    return abs(step) == 1 and all(
+        b[0] - a[0] == 1 and b[1] - a[1] == step for a, b in zip(ordered, ordered[1:])
+    )
+
+
 def adjacent_pairs(grid, width, height):
     return sum(
         1
@@ -193,6 +250,9 @@ def energy(grid, width, height, dl, cfg):
     lengths = run_lengths(grid, width, height)
     score = 45.0 * sum(1 for length in lengths if length < cfg.min_run)
     score += 45.0 * sum(1 for length in lengths if length > cfg.max_run)
+    # An editor may license a handful of two-letter answers (abbreviations, plate codes)
+    # to buy block freedom; past that quota they read as filler debt, not as a device.
+    score += 25.0 * max(0, sum(1 for x in lengths if x == 2) - cfg.max_two_runs)
     for wanted, count in cfg.required.items():
         have = sum(1 for length in lengths if length == wanted)
         score += 70.0 * max(0, count - have)
@@ -212,7 +272,21 @@ def energy(grid, width, height, dl, cfg):
     score += cfg.kappa_weight * kappa_surrogate(lengths, dl)
     score += 0.20 * abs(blocks - cfg.target_blocks)
     score += 12.0 * max(0, dead_cells_exact(grid, width, height, cfg.min_run) - cfg.max_dead)
-    score -= 0.08 * min(adjacent_pairs(grid, width, height), 60)
+    if cfg.shape_weight:
+        # An editor can rule on block *shapes*, not just their count: airy titles want
+        # lone cells, 1-wide bars and diagonal chains, and reject squares and bends.
+        # The clump bonus below is exactly what breeds them, so it flips sign here.
+        bad, squares = block_shape_defects(grid, width, height)
+        score += cfg.shape_weight * bad + 1.5 * cfg.shape_weight * squares
+        score += cfg.diagonal_bias * adjacent_pairs(grid, width, height)
+    else:
+        score -= 0.08 * min(adjacent_pairs(grid, width, height), 60)
+    if cfg.mask is not None:
+        # Silhouette affinity: the block pattern is the only picture a crossword draws,
+        # so a title that wants one (a house, a jar, a hand-drawn sketch to honour) hands
+        # in the cells it wants blocked. One-sided on purpose — the mask says where blocks
+        # belong, never how many there are; `--target-blocks` owns the count.
+        score += cfg.mask_weight * sum(1 for cell in cfg.mask if not grid[cell[0]][cell[1]])
     return score
 
 
@@ -316,6 +390,8 @@ def feasible(grid, width, height, cfg):
         )
         and max(block_components(grid, width, height, cfg.frame)) <= cfg.max_block_component
         and dead_cells_exact(grid, width, height, cfg.min_run) <= cfg.max_dead
+        and (not cfg.shape_strict or block_shape_defects(grid, width, height) == (0, 0))
+        and sum(1 for x in lengths if x == 2) <= cfg.max_two_runs
     )
 
 
@@ -331,6 +407,8 @@ def main():
     parser.add_argument("--height", type=int, default=10)
     parser.add_argument("--min-run", type=int, default=3)
     parser.add_argument("--max-run", type=int, default=11)
+    parser.add_argument("--max-two-runs", type=int, default=0,
+                        help="how many two-letter answers the editor licensed (needs --min-run 2)")
     parser.add_argument("--required", default="11:1,5:1", help="LEN:COUNT,... run lengths to force")
     parser.add_argument("--tajenka-lengths", default="5,11")
     parser.add_argument("--max-fives", type=int, default=14)
@@ -354,10 +432,23 @@ def main():
     parser.add_argument("--seed-base", type=int, default=0)
     parser.add_argument("--outdir", required=True)
     parser.add_argument("--keep", type=int, default=10)
+    parser.add_argument("--mask", help="text file, one row per grid row, '#' where a block "
+                        "is wanted: pulls the block pattern toward a silhouette")
+    parser.add_argument("--mask-weight", type=float, default=1.5,
+                        help="energy per cell that disagrees with --mask")
+    parser.add_argument("--block-style", choices=("any", "airy"), default="any",
+                        help="'airy': block clumps must be a lone cell, a 1-wide bar or a "
+                        "diagonal chain — no squares, no L-bends, no knight shapes")
+    parser.add_argument("--shape-weight", type=float, default=30.0,
+                        help="energy per cell in an illegal clump under --block-style airy")
+    parser.add_argument("--diagonal-bias", type=float, default=0.12,
+                        help="energy per orthogonally touching block pair under airy: "
+                        "pushes bars apart into diagonals")
     args = parser.parse_args()
 
     cfg = Config()
     cfg.min_run, cfg.max_run = args.min_run, args.max_run
+    cfg.max_two_runs = args.max_two_runs
     cfg.required = {
         int(part.split(":")[0]): int(part.split(":")[1]) for part in args.required.split(",") if part
     }
@@ -372,6 +463,16 @@ def main():
     cfg.frame = args.frame
     cfg.kappa_weight = args.kappa_weight
     cfg.iterations = args.iterations
+    cfg.shape_weight = args.shape_weight if args.block_style == "airy" else 0.0
+    cfg.shape_strict = args.block_style == "airy"
+    cfg.diagonal_bias = args.diagonal_bias
+    cfg.mask = None
+    cfg.mask_weight = args.mask_weight
+    if args.mask:
+        rows = [ln.rstrip("\n") for ln in open(args.mask, encoding="utf-8") if ln.strip()]
+        if len(rows) != args.height or any(len(x) != args.width for x in rows):
+            raise SystemExit(f"--mask must be {args.height}x{args.width}")
+        cfg.mask = {(r, c) for r, row in enumerate(rows) for c, ch in enumerate(row) if ch == "#"}
 
     dl = load_dl(args.wordlist, args.min_score)
     wanted = [int(x) for x in args.tajenka_lengths.split(",") if x.strip()]

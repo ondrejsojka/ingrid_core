@@ -40,7 +40,10 @@ import unicodedata
 from collections import Counter, defaultdict
 from pathlib import Path
 
-MIN_LEN = 3  # shortest entry, per Czech 15x15 convention (see fill_critic.py)
+# Shortest entry. Three is the Czech convention, but an editor may license a few
+# two-letter answers (abbreviations, codes); a numbered run always needs a clue, so the
+# checker reads what the grid actually contains rather than what convention expects.
+MIN_LEN = 2
 
 MEDIAN_CAP = 15
 MAX_CAP = 34

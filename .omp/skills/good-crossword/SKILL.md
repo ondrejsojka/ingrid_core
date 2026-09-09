@@ -1,17 +1,18 @@
 ---
 name: good-crossword
-description: Notes on generating a recognizably publication-tailored Czech crossword with ingrid_core — which knobs actually move theme density, what changes when the publication is defined by a topic or by a person rather than a place, when to build the template around the theme words instead of filling one, how to build a švédská instead of an American grid, sane defaults, the traps that ate a day, and what to try next. Use when tuning a fill, building a theme wordlist for a publication, choosing a grid or grid genre, seeding theme entries, judging whether a fill is good, or reading a slack estimate.
+description: Notes on generating a recognizably publication-tailored Czech crossword with ingrid_core — which knobs actually move theme density, what changes when the publication is defined by a topic, a person or an editor rather than a place, when to build the template around the theme words instead of filling one, how to build a švédská instead of an American grid, how to honour an editor's block grammar and what it costs, sane defaults, the traps that ate a day, and what to try next. Use when tuning a fill, building a theme wordlist for a publication, choosing a grid or grid genre, seeding theme entries, negotiating grid constraints with an author, judging whether a fill is good, or reading a slack estimate.
 ---
 
 # Making a crossword that reads like it belongs to the magazine
 
-Status: working notes, not a spec. Three titles now: **Brnensky Metropolitan 7-8/2026**
+Status: working notes, not a spec. Four titles now: **Brnensky Metropolitan 7-8/2026**
 (city magazine, American grid), **LFŠ / Letní filmová škola 2026** (film festival daily,
-švédská) and **Karolína 2026** (a birthday puzzle for one reader, švédská). Numbers are
-real but each was measured once. Treat the causal claims as "this is what happened when I
-pulled the lever", not as laws. Long versions with raw runs: `theme-density.md`
-(Metropolitan) and `lfs-notes.md` (LFŠ) in the repo root; the third title's artifacts are
-under `local/karolina/`.
+švédská), **Karolína 2026** (a birthday puzzle for one reader, švédská) and **Zaváračka
+2026** (a festival puzzle whose author is also its editor, American). Numbers are real but
+each was measured once. Treat the causal claims as "this is what happened when I pulled the
+lever", not as laws. Long versions with raw runs: `theme-density.md` (Metropolitan) and
+`lfs-notes.md` (LFŠ) in the repo root; the third title's artifacts are under
+`local/karolina/`, the fourth's under `local/zavaracka/`.
 
 The single most useful thing the second title taught: **decide what kind of publication
 you have before you touch a gate.** Sec. "Place titles vs topic titles" below. Almost
@@ -21,6 +22,13 @@ The third title moved the decision one level up. **Before choosing gates, decide
 you are filling a template or building one.** With a small theme vocabulary the Preferred
 tier cannot win against a fixed topology no matter how well graded it is, and the whole
 gate apparatus above is beside the point. Sec. "Person titles" below.
+
+The fourth title added an axis the first three did not have: **an author who rules on the
+result.** When someone can say "no 2×2 blocks" or "six two-letter answers are fine", the
+binding constraint stops being the dictionary and becomes the *permissions*. Two habits
+follow, and both are in the sections below: quantify what a house rule costs before you
+promise it, and answer "should I send more words?" with a length histogram rather than a
+yes.
 
 Read `CLUES.md` before writing any clue. That is the editorial spec and it is better
 thought-through than anything here.
@@ -362,6 +370,15 @@ Two practical consequences:
 - **Prefer templates whose long slots don't cross each other.** Untested, but it follows
   directly, and it is the obvious thing to try next.
 
+The same table is the **author brief**. Read it in the other direction and it says exactly
+which words to ask for: a grid with 15 three-letter slots against a list with five
+three-letter words has one obvious request, and any list word longer than the longest slot
+can *never* appear — on one title that was ten words including the festival's own name.
+Sending an author a length table gets short words back; asking for "more words" gets more
+of what they already sent. Inflected forms are the tempting shortcut and they underdeliver
+for the same reason: 137 attested forms of the author's own nouns yielded **two** placed
+entries, because a form keeps the length of its lemma.
+
 Related, and worth knowing before you invest: the two most heavily engineered features in
 this whole system went **completely unused** on this title. `--estimate-variants`, which
 has the longest section in this file, answers "how many distinct fills exist at this
@@ -514,6 +531,18 @@ Two more landmines in the same family:
   crossing domains are far larger under folding, and the output prints unaccented. It is
   a rendering choice wearing a solver flag's clothes. Ban it from screening runs.
 
+Two more, learned on a title where the marquee entries were pinned rather than seeded:
+
+- **Pins buy theme entries with candidate diversity, and the corners pay.** After a
+  blocklist made a pinned grid `Unfillable`, dropping the two pinned entries reached the
+  *same* preferred count with none of the forced junk — some slot's domain had been
+  reduced to a single ugly word. If a pinned grid fights you, un-pin before you widen the
+  dictionary. Repeatedly: the unpinned fill scored **+5.3** where its pinned sibling scored
+  **−0.8**.
+- **Pin-screen at the tier you will fill at.** Six pins found against a 548 k tier came
+  back `Unfillable` at 220 k; re-screening against 220 k found four that fill. Same rule as
+  the glue-slot screen, one level up.
+
 ## Knobs, defaults, and how to tune them
 
 ### `theme_tier.py` — precision. Biggest lever.
@@ -594,6 +623,33 @@ doubles as independent confirmation that it did what it claimed. The old rule of
 
 What the change bought: baseline kappa 0.9363 / 74 slots / 46% short → `g09` 0.9157 /
 70 slots / 28.6% short, and 6 → 9 theme words on **a third** of the cores.
+
+### Editorial block grammar, and the two-letter valve
+
+An editor may rule on block **shapes**, not just their count — "2×2 sú masívne, rovnako
+tie v tvare koňa; diagonály vyzerajú vzdušnejšie" is a house-style rule and belongs in the
+generator. `swedish_grid.py --block-style airy` admits exactly three clump shapes over
+**8-connected** clumps (a corner touch counts): a lone cell, a 1-wide straight bar, a
+monotone diagonal chain. Squares, L-bends and knight shapes are rejected. It is an energy
+term (`--shape-weight` per offending cell, squares ×1.5; `--diagonal-bias` charges
+orthogonally touching pairs and replaces the old clump *bonus*, which is what bred the
+squares) **and** a feasibility gate — a soft penalty alone ships grids with one stubborn
+bend.
+
+Know what it costs before you promise it. **Block clumps are load-bearing:** a block beside
+a block is what lets a *short* perpendicular word sit next to an awkward letter. Take them
+away and, on a 13×15, only 9 of 24 airy templates fill at all, and long theme entries stop
+being placeable — a 13-letter entry across a full row went from "hard" to 18-of-20
+*provably* unfillable, and the rare-letter census is the reason: `J` and `K` mid-word need
+the short crossings the grammar just outlawed. The one 9 that survived, `BUBLINÁDA`, has no
+rare letter in it. **Census the letters, not the length.**
+
+The valve that buys those words back is a **licensed two-letter answer**:
+`--min-run 2 --max-two-runs N` (energy term plus feasibility gate, so the quota cannot
+drift). Six of them on a 13×17 flipped both impossible entries to fillable at the same
+dictionary tier. Two-letter answers are not filler debt if they get a real clue tier —
+element symbols, country codes, district plate codes — and if the editor sets the quota.
+Ask for it explicitly; an author will often grant it when they see what it buys.
 
 ### The long-tail sweep — and why kappa lied about it
 
@@ -712,6 +768,20 @@ answer set, not a bonus — but that is exactly the point:
 B is denser per unit area and reads like a magazine puzzle; A ships the whole list. The
 choice between them is editorial, not technical — which is the healthy state to be in.
 
+Zaváračka, fourth title, American 13×17 under an editor's block grammar. The row that
+matters is the last one — it is the same grid, same dictionary, same solver, with two
+editorial permissions added:
+
+| | 13×15, min-run 3 | 13×17, six licensed two-letter answers |
+|---|---:|---:|
+| answers | 63 | 69 |
+| theme entries | 7 | 9 |
+| `DATAPROJEKTOR` (13) placeable | 18 of 20 candidates *provably* unfillable | **4 of 17 fill** |
+| `ZAVÁRAČKA` (9) placeable | 17 of 18 unfillable | **5 of 21 fill** |
+
+Nothing about the corpus changed between those columns. What changed is that the grid was
+allowed to be two rows taller and to contain six two-letter answers.
+
 ## Traps I actually fell into
 
 - **Two input lists whose score columns mean different things.** Merging the
@@ -781,6 +851,25 @@ choice between them is editorial, not technical — which is the healthy state t
   both. Ask for **adversarial** evidence, not a narrative: *"grep your output for three
   answers in plaintext and paste the result"* catches the first in one line. *"I typed
   letters and clicked check"* catches neither.
+- **An author-supplied grid sketch is a wish, not a template.** The one I was handed had a
+  length-1 run and nine length-2 runs, i.e. it cannot be filled and the author had no way
+  to know. Transcribe it, compute the run histogram, and *say so* in the reply — two
+  minutes turns "reproduce this" into "keep its genre", and it is also how you learn which
+  of its properties (asymmetry, airiness, a silhouette) the author actually cares about.
+- **Blocklist-and-refill is not monotone.** Banning junk moves the search into a different
+  basin, and the new basin is often worse: banning seven mediocre filler words cost three
+  theme entries and substituted worse junk; banning one more made the grid `Unfillable`;
+  banning a single word that genuinely could not ship (`nasrat`) dropped the critic score
+  from 6.3 to 1.2-2.2 across ten seeds. Ban the minimum, then **sweep seeds** — six seeds
+  on one template moved theme 5→7 and unclued filler 28→19 at constant everything else.
+- **`MIN_LEN = 3` is baked into more places than you remember.** `clue_check.py`,
+  `fill_critic.py` and every hand-rolled `answers()`/slot walker assume three, while the
+  American `number()` in the renderer numbers *every* run — so the moment an editor
+  licenses two-letter answers, a licensed two gets a number in the grid and no clue in the
+  sheet. That is a `KeyError` if you are lucky and an unsolvable puzzle if you are not.
+  Lower the floor in the checker and the sheet builder together, and give the twos a real
+  clue tier (element symbols, country codes, district plate codes) instead of pretending
+  they are words.
 
 ## Reading a slack estimate — `--estimate-variants`
 
@@ -941,6 +1030,14 @@ a reviewer caught in my set.
   letter of a legend yields another real Czech word that changes the sense, rewrite. This
   is a good candidate for `clue_check.py`, since a one-edit-distance lookup against the
   standard list is a two-line check.
+- **When the author writes some of the clues, model that as a state, not as a hole.** On a
+  title where the theme legends belong to the author, every checker rule that reads the
+  clue set fires spuriously: identical placeholders are duplicate clues, they are all one
+  band, and a chatty placeholder drags the median length over the cap. Report those three
+  as structural, not as defects — but do fix the one thing that is real: keep the
+  placeholder **short and name-free**. `(legendu doplní Karolína)` tripped the leaked-root
+  check against the answer `KAROLKA`, which is a genuine leak in a genuine clue slot;
+  `(tvoja legenda)` does not.
 
 ## The critic — built, and what using it taught
 
@@ -1033,6 +1130,9 @@ critic above.
 | `curated_dict.py` | curated tier from a TSV; build **fails** on an unattested row | yes |
 | `theme_tier.py` / `theme_expand.py` | mined tier: grade, then inflect | yes |
 | `swedish_grid.py --frame` | švédská templates, any size, no symmetry | yes |
+| `swedish_grid.py --block-style airy` | editor's block grammar: lone cells, 1-wide bars, diagonals | yes |
+| `swedish_grid.py --min-run 2 --max-two-runs N` | a licensed quota of two-letter answers | yes |
+| `swedish_grid.py --mask FILE --mask-weight W` | one-sided pull toward a block silhouette; works, rarely worth it | yes |
 | `lfs_grid11.py` | plants long runs then anneals around them | trick generalises |
 | `tajenka_place.py` | domain-screened placement of multi-part seeds | yes |
 | `theme_construct.py` | greedy marquee seeding, real solver as oracle | yes |
@@ -1046,9 +1146,9 @@ critic above.
 | `check_grid.py` | švédská legality: runs, orphans, legend load, connectivity, dict membership | yes |
 | `karolina_assemble.py` | grid + clue/band TSVs → one `puzzle.json` | yes |
 | `render_puzzle.py` | `puzzle.json` → interactive or review HTML, one self-contained file | yes |
-| `combine_review.py` | several review pages → one approval e-mail | yes |
+| `combine_review.py` | several review pages → one approval e-mail; `--accent/--bg/--font` | yes |
 | `send_mail.py` | Resend with attachments | yes |
-| `crossword-email` skill | `--layout {american,swedish}`, `--tajenka` shading | yes |
+| `crossword-email` skill | `--layout {american,swedish}`, `--tajenka` shading, `--palette {classic,blueprint}` | yes |
 
 ## Next steps, roughly by effort
 
@@ -1056,7 +1156,8 @@ critic above.
 same-lemma collision check, theme spread, the constructor with the solver as oracle, the
 score-30-32 long-tail win, the estimator budget fix, a second and a third title, the
 template-around-the-theme constructor (`theme_grid.py`), `--dupe-exempt-preferred`, and
-the Czech+Slovak merged standard tier.
+the Czech+Slovak merged standard tier, the editor's block grammar (`--block-style airy`),
+the licensed two-letter quota (`--max-two-runs`), and a fourth title.
 
 **Low.**
 - Flag answers whose meaning is niche enough to need an anchor (loanwords, sports terms,
@@ -1099,11 +1200,53 @@ the Czech+Slovak merged standard tier.
   partial template arc-consistent?" in-process would let the constructor use the solver's
   own verdict at every step instead of a filter that is necessary but not sufficient.
   That is the single tooling gap that cost the most time on this title.
-- **The theme list is the ceiling, and it cannot be expanded.** 79 forms is 79 answers;
-  there is no `theme_expand.py` move here because each clue is bound to its surface form.
-  What *would* help is a tool that goes the other way: propose inflections/relatives of a
-  hand list and ask the author to clue the ones the grid actually wants, i.e. expansion
-  driven by the placement search rather than by morphology.
-- A **fourth** title, ideally one defined by a house style, an author or an era — the
-  place / topic / person split is a three-point line and three points still fit almost
-  anything.
+- **The theme list is a ceiling — but the author can raise it, if you ask in lengths.**
+  A hand list of N forms is N answers, and `theme_expand.py` cannot help when each clue is
+  bound to its surface form. Two moves work instead: send the author the slot-length
+  histogram against their own (they send short words back), and ask which *structural*
+  concessions they will grant — a taller grid, a two-letter quota — because those change
+  what is placeable far more than any dictionary work. What is still missing is the tool
+  that goes the other way: propose inflections and relatives of a hand list **driven by the
+  placement search**, and ask the author to clue only the ones the grid actually wants.
+  Morphology-first expansion is measurably weak: 137 attested forms yielded two placements.
+- A **fifth** title, ideally one defined by an era or a house style, and ideally one where
+  the author does *not* write the clues — three of the four so far had an author in the
+  loop, which is now the best-understood axis and no longer the informative one.
+
+## Fourth title — Zaváračka (festival, hand list, author-editor in the loop)
+
+Profile: a festival puzzle whose author supplies the theme list **and writes the theme
+clues herself**, hands over a font and two hex colours, sketches a grid by hand, and
+*rules on the result* — three delivery rounds, each redesigned around one editorial
+objection. Person-title machinery (finite hand list), place-title delivery (an American
+numbered grid, not a švédská). The general lessons it produced are hoisted into the
+sections above; this is the ledger.
+
+| | round 1 — dense | round 2 — airy blocks | round 3 — 13×17 + two-letter licence |
+|---|---|---|---|
+| what the editor changed | — | "2×2 a jazdcove tvary sú masívne" | "dvojice sú za mňa ok, max 6; skús 13×17" |
+| grid | 13×15, 44 blocks | 13×15, 34 blocks | 13×17, 38-39 blocks |
+| answers | 61 | 63 | 69 |
+| theme entries | 8 | 7 | **9** |
+| longest theme entry | 8 | 9 (`BUBLINÁDA`) | **13 (`DATAPROJEKTOR`)** |
+| illegal block clumps | 41 cells, 3 squares | **0, 0** | **0, 0** |
+| `fill_critic` score | +7.9 | +7.9 | +5.4 |
+| filler the author must clue | 0 (she clues theme only) | 0 | 0 |
+| clues she owes | 6 | 5 | 7 |
+
+A fourth geometry shipped alongside round 1 and is worth keeping in mind as the honest
+alternative: a **theme-first** 14×16 with 91 blocks seats 26 of 33 answers from the list
+(79 %) and needs no filler dictionary at all. It reads like the list rather than like a
+crossword, and the choice between the two is editorial, not technical — same conclusion
+as the third title, reached from the opposite direction.
+
+Two things are structural to this kind of title rather than to this puzzle:
+
+- **The author owns half the clue set**, so the clue tooling has to model "not my clue"
+  as a first-class state rather than as a missing row. See the clue-writing section.
+- **The theme list is a ceiling the author can raise on request** — and the length
+  histogram is how you ask. Round 3 exists because the round-2 mail said "15 three-letter
+  slots, five three-letter words, and ten of your words are 9+ and can never appear";
+  she sent fourteen short words and licensed two-letter answers, and both impossible
+  entries became possible. An author brief written as a *length table* got a better
+  answer than three rounds of asking for "more words" would have.

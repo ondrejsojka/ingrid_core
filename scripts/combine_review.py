@@ -32,6 +32,9 @@ def main():
     ap.add_argument("--intro", help="HTML fragment placed above the first candidate")
     ap.add_argument("--drop-empty-grid", action="store_true",
                     help="omit the unsolved grid; its in-cell legends are illegible at e-mail scale")
+    ap.add_argument("--accent", default="#2f5d50", help="candidate header colour")
+    ap.add_argument("--bg", default="#f7f4ee", help="page background")
+    ap.add_argument("--font", default="system-ui,-apple-system,sans-serif")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -50,12 +53,12 @@ def main():
     # with only the solved grid left, in-cell legend text is unreadable noise at this
     # scale — the answer key below carries every clue in full size
     hide = ".cand .clue-box{visibility:hidden}" if args.drop_empty_grid else ""
-    extra = hide + """
-.cand{border-top:3px solid #2f5d50;margin:38px 0 0}
-.candhead{background:#2f5d50;color:#fff;font:700 15px/1.4 system-ui,sans-serif;
-  padding:8px 14px;letter-spacing:.04em;text-transform:uppercase}
-.wrap{max-width:1500px;margin:0 auto;padding:26px 18px 60px;
-  font:16px/1.55 system-ui,-apple-system,sans-serif;color:#202020;background:#f7f4ee}
+    extra = hide + f"""
+.cand{{border-top:3px solid {args.accent};margin:38px 0 0}}
+.candhead{{background:{args.accent};color:#fff;font:700 15px/1.4 {args.font};
+  padding:8px 14px;letter-spacing:.04em;text-transform:uppercase}}
+.wrap{{max-width:1500px;margin:0 auto;padding:26px 18px 60px;
+  font:16px/1.55 {args.font};color:#202020;background:{args.bg}}}
 """
     html = (
         '<!doctype html><html lang="cs"><head><meta charset="utf-8">'
