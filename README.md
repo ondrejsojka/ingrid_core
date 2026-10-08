@@ -1,6 +1,6 @@
 # Ingrid Core
 
-This crate contains the core crossword-solving code used in the Ingrid
+This contains the core crossword-solving code used in the Ingrid
 construction app, as well as a standalone binary that can be used to solve
 grids from the command line.
 
